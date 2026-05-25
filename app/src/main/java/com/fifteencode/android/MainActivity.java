@@ -40,7 +40,7 @@ public class MainActivity extends Activity {
     private static final String PLATFORM = "https://15code.com";
     private static final String LLM = "https://cli.15code.com/v1/chat/completions";
     private static final String PREFS = "15code_android";
-    private static final String APP_VERSION = "1.2.1";
+    private static final String APP_VERSION = "1.2.2";
     private static final String PREFERRED_MODEL = "qwen3.6";
 
     private SharedPreferences prefs;
@@ -364,8 +364,8 @@ public class MainActivity extends Activity {
         setStreamingUi(true);
         new Thread(() -> {
             StringBuilder answer = new StringBuilder();
+            JSONObject body = new JSONObject();
             try {
-                JSONObject body = new JSONObject();
                 body.put("model", selectedModel);
                 body.put("stream", true);
                 body.put("max_tokens", 4096);
