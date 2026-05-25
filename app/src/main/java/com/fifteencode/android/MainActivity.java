@@ -8,7 +8,9 @@ import android.os.Bundle;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
+import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
+import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
@@ -36,6 +38,8 @@ public class MainActivity extends Activity {
     private static final String PLATFORM = "https://15code.com";
     private static final String LLM = "https://cli.15code.com/v1/chat/completions";
     private static final String PREFS = "15code_android";
+    private static final String APP_VERSION = "1.2.0";
+    private static final String PREFERRED_MODEL = "qwen3.6";
 
     private SharedPreferences prefs;
     private String sessionToken;
@@ -43,6 +47,9 @@ public class MainActivity extends Activity {
     private String selectedModel;
     private String accountEmail;
     private double credits;
+    private volatile boolean streaming;
+    private volatile boolean stopRequested;
+    private volatile HttpURLConnection activeChatConnection;
     private final List<Model> models = new ArrayList<>();
     private final JSONArray messages = new JSONArray();
 
@@ -56,6 +63,8 @@ public class MainActivity extends Activity {
     private Spinner modelSpinner;
     private TextView statusText;
     private TextView accountText;
+    private Button newChatButton;
+    private Button logoutButton;
     private Button sendButton;
     private ProgressBar progress;
     private ScrollView scroll;
@@ -63,6 +72,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         sessionToken = prefs.getString("sessionToken", null);
         goKey = prefs.getString("goKey", null);
@@ -92,17 +102,17 @@ public class MainActivity extends Activity {
         title.setGravity(Gravity.CENTER_VERTICAL);
         header.addView(title, new LinearLayout.LayoutParams(0, -1, 1));
 
-        Button newChat = new Button(this);
-        newChat.setText("新对话");
-        newChat.setAllCaps(false);
-        newChat.setOnClickListener(v -> newChat());
-        header.addView(newChat, new LinearLayout.LayoutParams(dp(88), dp(44)));
+        newChatButton = new Button(this);
+        newChatButton.setText("新对话");
+        newChatButton.setAllCaps(false);
+        newChatButton.setOnClickListener(v -> newChat());
+        header.addView(newChatButton, new LinearLayout.LayoutParams(dp(88), dp(42)));
 
-        Button logout = new Button(this);
-        logout.setText("退出");
-        logout.setAllCaps(false);
-        logout.setOnClickListener(v -> logout());
-        header.addView(logout, new LinearLayout.LayoutParams(dp(72), dp(44)));
+        logoutButton = new Button(this);
+        logoutButton.setText("退出");
+        logoutButton.setAllCaps(false);
+        logoutButton.setOnClickListener(v -> logout());
+        header.addView(logoutButton, new LinearLayout.LayoutParams(dp(68), dp(42)));
 
         progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progress.setVisibility(View.GONE);
@@ -144,7 +154,7 @@ public class MainActivity extends Activity {
         loginPanel.addView(loginButton, new LinearLayout.LayoutParams(-1, dp(52)));
 
         TextView hint = new TextView(this);
-        hint.setText("使用 15code.com 账号登录。登录后会自动读取模型列表和可用 API Key。");
+        hint.setText("15code 账号");
         hint.setTextColor(0xFF64748B);
         hint.setTextSize(13);
         hint.setPadding(0, dp(16), 0, 0);
@@ -177,6 +187,19 @@ public class MainActivity extends Activity {
         chatPanel.addView(accountText, new LinearLayout.LayoutParams(-1, dp(34)));
 
         modelSpinner = new Spinner(this);
+        modelSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                if (position >= 0 && position < models.size()) {
+                    selectedModel = models.get(position).id;
+                    prefs.edit().putString("model", selectedModel).apply();
+                    statusText.setText("当前模型 · " + modelLabel(selectedModel));
+                }
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {}
+        });
         chatPanel.addView(modelSpinner, new LinearLayout.LayoutParams(-1, dp(48)));
 
         scroll = new ScrollView(this);
@@ -191,12 +214,15 @@ public class MainActivity extends Activity {
         chatPanel.addView(composer, new LinearLayout.LayoutParams(-1, dp(82)));
 
         promptInput = new EditText(this);
-        promptInput.setHint("问点什么...");
+        promptInput.setHint("发消息给 15code");
         promptInput.setMinLines(1);
         promptInput.setMaxLines(4);
-        promptInput.setImeOptions(EditorInfo.IME_ACTION_SEND);
+        promptInput.setImeOptions(EditorInfo.IME_ACTION_SEND | EditorInfo.IME_FLAG_NO_EXTRACT_UI);
         promptInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         promptInput.setBackground(makeBg(0xFFFFFFFF, 0xFFE2E8F0, dp(14)));
+        promptInput.setOnFocusChangeListener((v, hasFocus) -> {
+            if (hasFocus) scroll.postDelayed(() -> scroll.fullScroll(View.FOCUS_DOWN), 250);
+        });
         promptInput.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_SEND) {
                 sendMessage();
@@ -209,7 +235,10 @@ public class MainActivity extends Activity {
         sendButton = new Button(this);
         sendButton.setText("发送");
         sendButton.setAllCaps(false);
-        sendButton.setOnClickListener(v -> sendMessage());
+        sendButton.setOnClickListener(v -> {
+            if (streaming) stopStreaming();
+            else sendMessage();
+        });
         composer.addView(sendButton, new LinearLayout.LayoutParams(dp(84), -1));
     }
 
@@ -301,7 +330,15 @@ public class MainActivity extends Activity {
             }
         }
         if (models.isEmpty()) throw new Exception("未加载到可用模型");
-        if (selectedModel == null || selectedModel.isEmpty()) selectedModel = models.get(0).id;
+        if (selectedModel == null || selectedModel.isEmpty()) {
+            selectedModel = models.get(0).id;
+            for (Model model : models) {
+                if (PREFERRED_MODEL.equals(model.id)) {
+                    selectedModel = model.id;
+                    break;
+                }
+            }
+        }
     }
 
     private void sendMessage() {
@@ -321,35 +358,88 @@ public class MainActivity extends Activity {
             messages.put(user);
         } catch (Exception ignored) {}
 
-        setBusy(true, "正在生成回复...");
-        sendButton.setEnabled(false);
+        TextView assistantBubble = addBubble(modelLabel(selectedModel), "正在思考...", false);
+        setStreamingUi(true);
         new Thread(() -> {
+            StringBuilder answer = new StringBuilder();
             try {
                 JSONObject body = new JSONObject();
                 body.put("model", selectedModel);
-                body.put("stream", false);
+                body.put("stream", true);
                 body.put("max_tokens", 4096);
                 body.put("messages", messages);
-                JSONObject resp = postJson(LLM, body, goKey, false);
-                String answer = resp.getJSONArray("choices")
-                        .getJSONObject(0)
-                        .getJSONObject("message")
-                        .optString("content", "");
-                if (answer.isEmpty()) throw new Exception("模型返回为空，请换模型重试");
+                streamChat(body, chunk -> {
+                    answer.append(chunk);
+                    runOnUiThread(() -> updateBubble(assistantBubble, modelLabel(selectedModel), answer.toString()));
+                });
+                if (answer.length() == 0) throw new Exception("模型返回为空，请换模型重试");
                 JSONObject assistant = new JSONObject();
                 assistant.put("role", "assistant");
-                assistant.put("content", answer);
+                assistant.put("content", answer.toString());
                 messages.put(assistant);
-                runOnUiThread(() -> addBubble(modelLabel(selectedModel), answer, false));
             } catch (Exception e) {
-                runOnUiThread(() -> addBubble("错误", e.getMessage(), false));
+                if (stopRequested && answer.length() > 0) {
+                    try {
+                        JSONObject assistant = new JSONObject();
+                        assistant.put("role", "assistant");
+                        assistant.put("content", answer.toString());
+                        messages.put(assistant);
+                    } catch (Exception ignored) {}
+                    runOnUiThread(() -> updateBubble(assistantBubble, modelLabel(selectedModel), answer + "\n\n[已停止]"));
+                } else if (answer.length() == 0) {
+                    runOnUiThread(() -> updateBubble(assistantBubble, "错误", e.getMessage()));
+                } else {
+                    runOnUiThread(() -> updateBubble(assistantBubble, modelLabel(selectedModel), answer + "\n\n[连接中断]"));
+                }
             } finally {
-                runOnUiThread(() -> {
-                    sendButton.setEnabled(true);
-                    setBusy(false, "已连接 15code");
-                });
+                activeChatConnection = null;
+                runOnUiThread(() -> setStreamingUi(false));
             }
         }).start();
+    }
+
+    private void streamChat(JSONObject body, StreamHandler handler) throws Exception {
+        HttpURLConnection conn = (HttpURLConnection) new URL(LLM).openConnection();
+        activeChatConnection = conn;
+        conn.setConnectTimeout(20000);
+        conn.setReadTimeout(600000);
+        conn.setRequestMethod("POST");
+        conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+        conn.setRequestProperty("Accept", "text/event-stream");
+        conn.setRequestProperty("Authorization", "Bearer " + goKey);
+        conn.setRequestProperty("User-Agent", "15code-android-native/" + APP_VERSION);
+        conn.setDoOutput(true);
+        byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
+        conn.setRequestProperty("Content-Length", String.valueOf(bytes.length));
+        try (OutputStream out = conn.getOutputStream()) {
+            out.write(bytes);
+        }
+        int code = conn.getResponseCode();
+        if (code < 200 || code >= 300) {
+            throw new Exception("HTTP " + code + ": " + readAll(conn.getErrorStream()));
+        }
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (!streaming) throw new Exception("用户已停止生成");
+                line = line.trim();
+                if (!line.startsWith("data:")) continue;
+                String data = line.substring(5).trim();
+                if (data.isEmpty()) continue;
+                if ("[DONE]".equals(data)) break;
+                JSONObject obj = new JSONObject(data);
+                JSONObject choice = obj.optJSONArray("choices") == null ? null : obj.optJSONArray("choices").optJSONObject(0);
+                if (choice == null) continue;
+                JSONObject delta = choice.optJSONObject("delta");
+                String chunk = "";
+                if (delta != null) chunk = delta.optString("content", "");
+                if (chunk.isEmpty()) {
+                    JSONObject message = choice.optJSONObject("message");
+                    if (message != null) chunk = message.optString("content", "");
+                }
+                if (!chunk.isEmpty()) handler.onChunk(chunk);
+            }
+        }
     }
 
     private JSONObject getJson(String url, String bearer) throws Exception {
@@ -367,7 +457,7 @@ public class MainActivity extends Activity {
         conn.setRequestMethod(method);
         conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
         conn.setRequestProperty("Accept", "application/json");
-        conn.setRequestProperty("User-Agent", "15code-android-native/1.1.0");
+        conn.setRequestProperty("User-Agent", "15code-android-native/" + APP_VERSION);
         if (loginMode) conn.setRequestProperty("X-Auth-Mode", "bearer");
         if (bearer != null && !bearer.isEmpty()) conn.setRequestProperty("Authorization", "Bearer " + bearer);
         if (body != null) {
@@ -396,12 +486,16 @@ public class MainActivity extends Activity {
     private void showLogin() {
         loginPanel.setVisibility(View.VISIBLE);
         chatPanel.setVisibility(View.GONE);
+        newChatButton.setVisibility(View.GONE);
+        logoutButton.setVisibility(View.GONE);
         statusText.setText("请登录");
     }
 
     private void showChat() {
         loginPanel.setVisibility(View.GONE);
         chatPanel.setVisibility(View.VISIBLE);
+        newChatButton.setVisibility(View.VISIBLE);
+        logoutButton.setVisibility(View.VISIBLE);
         accountText.setText((accountEmail == null || accountEmail.isEmpty() ? "已登录" : accountEmail)
                 + " · 余额 " + String.format("%.4f", credits));
         ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, modelNames());
@@ -411,13 +505,13 @@ public class MainActivity extends Activity {
         for (int i = 0; i < models.size(); i++) if (models.get(i).id.equals(selectedModel)) selected = i;
         modelSpinner.setSelection(selected);
         if (messageList.getChildCount() == 0) {
-            addBubble("15code", "已登录。选择模型后输入问题即可开始。", false);
+            addBubble("15code", "已连接。", false);
         }
     }
 
     private List<String> modelNames() {
         List<String> names = new ArrayList<>();
-        for (Model m : models) names.add(m.name);
+        for (Model m : models) names.add(m.name + "  ·  " + m.id);
         return names;
     }
 
@@ -426,9 +520,9 @@ public class MainActivity extends Activity {
         return id;
     }
 
-    private void addBubble(String who, String text, boolean mine) {
+    private TextView addBubble(String who, String text, boolean mine) {
         TextView bubble = new TextView(this);
-        bubble.setText(who + "\n" + text);
+        updateBubble(bubble, who, text);
         bubble.setTextSize(15);
         bubble.setTextColor(mine ? 0xFFFFFFFF : 0xFF111827);
         bubble.setPadding(dp(12), dp(10), dp(12), dp(10));
@@ -437,6 +531,12 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
         lp.setMargins(mine ? dp(42) : 0, dp(8), mine ? 0 : dp(42), dp(8));
         messageList.addView(bubble, lp);
+        scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
+        return bubble;
+    }
+
+    private void updateBubble(TextView bubble, String who, String text) {
+        bubble.setText(who + "\n" + text);
         scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
     }
 
@@ -465,6 +565,22 @@ public class MainActivity extends Activity {
         statusText.setText(status);
     }
 
+    private void setStreamingUi(boolean active) {
+        streaming = active;
+        if (active) stopRequested = false;
+        progress.setVisibility(active ? View.VISIBLE : View.GONE);
+        statusText.setText(active ? "正在生成 · " + modelLabel(selectedModel) : "已连接 15code");
+        sendButton.setText(active ? "停止" : "发送");
+        promptInput.setEnabled(true);
+    }
+
+    private void stopStreaming() {
+        stopRequested = true;
+        streaming = false;
+        if (activeChatConnection != null) activeChatConnection.disconnect();
+        setStreamingUi(false);
+    }
+
     private void toast(String text) {
         Toast.makeText(this, text == null ? "操作失败" : text, Toast.LENGTH_LONG).show();
     }
@@ -488,5 +604,9 @@ public class MainActivity extends Activity {
             this.id = id;
             this.name = name;
         }
+    }
+
+    private interface StreamHandler {
+        void onChunk(String chunk);
     }
 }
