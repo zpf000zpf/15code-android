@@ -1,292 +1,492 @@
 package com.fifteencode.android;
 
-import android.Manifest;
-import android.annotation.SuppressLint;
 import android.app.Activity;
-import android.app.DownloadManager;
-import android.content.ActivityNotFoundException;
-import android.content.Context;
-import android.content.Intent;
-import android.content.pm.PackageManager;
-import android.net.ConnectivityManager;
-import android.net.Network;
-import android.net.NetworkCapabilities;
-import android.net.Uri;
-import android.os.Build;
+import android.content.SharedPreferences;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
-import android.os.Environment;
+import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
-import android.view.ViewGroup;
-import android.webkit.CookieManager;
-import android.webkit.DownloadListener;
-import android.webkit.URLUtil;
-import android.webkit.ValueCallback;
-import android.webkit.WebChromeClient;
-import android.webkit.WebResourceError;
-import android.webkit.WebResourceRequest;
-import android.webkit.WebSettings;
-import android.webkit.WebView;
-import android.webkit.WebViewClient;
+import android.view.inputmethod.EditorInfo;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
-import android.widget.FrameLayout;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
+import android.widget.ScrollView;
+import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
-public class MainActivity extends Activity {
-    private static final int FILE_CHOOSER_REQUEST = 1001;
-    private static final int NOTIFICATION_PERMISSION_REQUEST = 1002;
-    private static final String HOME_URL = "https://15code.com";
+import org.json.JSONArray;
+import org.json.JSONObject;
 
-    private WebView webView;
-    private ProgressBar progressBar;
-    private TextView titleView;
-    private ValueCallback<Uri[]> filePathCallback;
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+
+public class MainActivity extends Activity {
+    private static final String PLATFORM = "https://15code.com";
+    private static final String LLM = "https://cli.15code.com/v1/chat/completions";
+    private static final String PREFS = "15code_android";
+
+    private SharedPreferences prefs;
+    private String sessionToken;
+    private String goKey;
+    private String selectedModel;
+    private String accountEmail;
+    private double credits;
+    private final List<Model> models = new ArrayList<>();
+    private final JSONArray messages = new JSONArray();
+
+    private LinearLayout root;
+    private LinearLayout loginPanel;
+    private LinearLayout chatPanel;
+    private LinearLayout messageList;
+    private EditText emailInput;
+    private EditText passwordInput;
+    private EditText promptInput;
+    private Spinner modelSpinner;
+    private TextView statusText;
+    private TextView accountText;
+    private Button sendButton;
+    private ProgressBar progress;
+    private ScrollView scroll;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        sessionToken = prefs.getString("sessionToken", null);
+        goKey = prefs.getString("goKey", null);
+        selectedModel = prefs.getString("model", null);
         buildUi();
-        configureWebView();
-        requestNotificationPermissionIfNeeded();
-        if (savedInstanceState == null) {
-            webView.loadUrl(HOME_URL);
-        } else {
-            webView.restoreState(savedInstanceState);
-        }
+        if (sessionToken != null) restoreSession();
     }
 
     private void buildUi() {
-        LinearLayout root = new LinearLayout(this);
+        root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(0xFFFFFFFF);
-
-        LinearLayout toolbar = new LinearLayout(this);
-        toolbar.setOrientation(LinearLayout.HORIZONTAL);
-        toolbar.setGravity(Gravity.CENTER_VERTICAL);
-        toolbar.setPadding(dp(12), dp(8), dp(8), dp(8));
-        toolbar.setBackgroundColor(0xFF0F172A);
-
-        titleView = new TextView(this);
-        titleView.setText("15code");
-        titleView.setTextColor(0xFFFFFFFF);
-        titleView.setTextSize(18);
-        titleView.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(0, dp(44), 1);
-        toolbar.addView(titleView, titleParams);
-
-        Button home = toolbarButton("主页");
-        home.setOnClickListener(v -> webView.loadUrl(HOME_URL));
-        toolbar.addView(home);
-
-        Button refresh = toolbarButton("刷新");
-        refresh.setOnClickListener(v -> webView.reload());
-        toolbar.addView(refresh);
-
-        progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        progressBar.setMax(100);
-        progressBar.setVisibility(View.GONE);
-
-        FrameLayout webContainer = new FrameLayout(this);
-        webView = new WebView(this);
-        webContainer.addView(webView, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-        ));
-
-        root.addView(toolbar, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(60)
-        ));
-        root.addView(progressBar, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(3)
-        ));
-        root.addView(webContainer, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                0,
-                1
-        ));
+        root.setBackgroundColor(0xFFF6F8FB);
         setContentView(root);
+
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setPadding(dp(16), dp(12), dp(12), dp(12));
+        header.setBackgroundColor(0xFF0F172A);
+        root.addView(header, new LinearLayout.LayoutParams(-1, dp(64)));
+
+        TextView title = new TextView(this);
+        title.setText("15code");
+        title.setTextColor(0xFFFFFFFF);
+        title.setTextSize(22);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setGravity(Gravity.CENTER_VERTICAL);
+        header.addView(title, new LinearLayout.LayoutParams(0, -1, 1));
+
+        Button newChat = new Button(this);
+        newChat.setText("新对话");
+        newChat.setAllCaps(false);
+        newChat.setOnClickListener(v -> newChat());
+        header.addView(newChat, new LinearLayout.LayoutParams(dp(88), dp(44)));
+
+        Button logout = new Button(this);
+        logout.setText("退出");
+        logout.setAllCaps(false);
+        logout.setOnClickListener(v -> logout());
+        header.addView(logout, new LinearLayout.LayoutParams(dp(72), dp(44)));
+
+        progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        progress.setVisibility(View.GONE);
+        root.addView(progress, new LinearLayout.LayoutParams(-1, dp(3)));
+
+        statusText = new TextView(this);
+        statusText.setTextColor(0xFF64748B);
+        statusText.setTextSize(13);
+        statusText.setPadding(dp(16), dp(8), dp(16), dp(8));
+        root.addView(statusText, new LinearLayout.LayoutParams(-1, dp(40)));
+
+        buildLoginPanel();
+        buildChatPanel();
+        showLogin();
     }
 
-    private Button toolbarButton(String text) {
-        Button button = new Button(this);
-        button.setText(text);
-        button.setTextColor(0xFFFFFFFF);
-        button.setTextSize(13);
-        button.setAllCaps(false);
-        button.setBackgroundColor(0x002563EB);
-        button.setMinWidth(dp(56));
-        button.setPadding(dp(6), 0, dp(6), 0);
-        button.setGravity(Gravity.CENTER);
-        return button;
+    private void buildLoginPanel() {
+        loginPanel = new LinearLayout(this);
+        loginPanel.setOrientation(LinearLayout.VERTICAL);
+        loginPanel.setPadding(dp(22), dp(28), dp(22), dp(22));
+        root.addView(loginPanel, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        TextView headline = new TextView(this);
+        headline.setText("登录 15code");
+        headline.setTextSize(26);
+        headline.setTextColor(0xFF111827);
+        headline.setTypeface(Typeface.DEFAULT_BOLD);
+        headline.setGravity(Gravity.CENTER_HORIZONTAL);
+        loginPanel.addView(headline, new LinearLayout.LayoutParams(-1, dp(54)));
+
+        emailInput = field("邮箱", false);
+        passwordInput = field("密码", true);
+
+        Button loginButton = new Button(this);
+        loginButton.setText("登录");
+        loginButton.setAllCaps(false);
+        loginButton.setTextSize(16);
+        loginButton.setOnClickListener(v -> login());
+        loginPanel.addView(loginButton, new LinearLayout.LayoutParams(-1, dp(52)));
+
+        TextView hint = new TextView(this);
+        hint.setText("使用 15code.com 账号登录。登录后会自动读取模型列表和可用 API Key。");
+        hint.setTextColor(0xFF64748B);
+        hint.setTextSize(13);
+        hint.setPadding(0, dp(16), 0, 0);
+        loginPanel.addView(hint);
     }
 
-    @SuppressLint("SetJavaScriptEnabled")
-    private void configureWebView() {
-        CookieManager.getInstance().setAcceptCookie(true);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
-        }
-
-        WebSettings settings = webView.getSettings();
-        settings.setJavaScriptEnabled(true);
-        settings.setDomStorageEnabled(true);
-        settings.setDatabaseEnabled(true);
-        settings.setLoadWithOverviewMode(true);
-        settings.setUseWideViewPort(true);
-        settings.setBuiltInZoomControls(false);
-        settings.setDisplayZoomControls(false);
-        settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setUserAgentString(settings.getUserAgentString() + " 15codeAndroid/1.0.0");
-
-        webView.setWebViewClient(new WebViewClient() {
-            @Override
-            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                return handleUrl(request.getUrl());
-            }
-
-            @Override
-            public boolean shouldOverrideUrlLoading(WebView view, String url) {
-                return handleUrl(Uri.parse(url));
-            }
-
-            @Override
-            public void onPageFinished(WebView view, String url) {
-                titleView.setText(view.getTitle() == null || view.getTitle().trim().isEmpty() ? "15code" : view.getTitle());
-                CookieManager.getInstance().flush();
-            }
-
-            @Override
-            public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && request.isForMainFrame()) {
-                    Toast.makeText(MainActivity.this, "页面加载失败，请检查网络", Toast.LENGTH_SHORT).show();
-                }
-            }
-        });
-
-        webView.setWebChromeClient(new WebChromeClient() {
-            @Override
-            public void onProgressChanged(WebView view, int newProgress) {
-                progressBar.setProgress(newProgress);
-                progressBar.setVisibility(newProgress >= 100 ? View.GONE : View.VISIBLE);
-            }
-
-            @Override
-            public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
-                if (filePathCallback != null) {
-                    filePathCallback.onReceiveValue(null);
-                }
-                filePathCallback = callback;
-                Intent intent = params.createIntent();
-                try {
-                    startActivityForResult(intent, FILE_CHOOSER_REQUEST);
-                    return true;
-                } catch (ActivityNotFoundException e) {
-                    filePathCallback = null;
-                    Toast.makeText(MainActivity.this, "没有可用的文件选择器", Toast.LENGTH_SHORT).show();
-                    return false;
-                }
-            }
-        });
-
-        webView.setDownloadListener(downloadListener());
+    private EditText field(String hint, boolean password) {
+        EditText input = new EditText(this);
+        input.setHint(hint);
+        input.setSingleLine(true);
+        input.setTextSize(16);
+        input.setPadding(dp(12), 0, dp(12), 0);
+        input.setInputType(password
+                ? InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD
+                : InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
+        loginPanel.addView(input, new LinearLayout.LayoutParams(-1, dp(56)));
+        return input;
     }
 
-    private boolean handleUrl(Uri uri) {
-        String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase();
-        String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase();
+    private void buildChatPanel() {
+        chatPanel = new LinearLayout(this);
+        chatPanel.setOrientation(LinearLayout.VERTICAL);
+        chatPanel.setPadding(dp(12), dp(8), dp(12), dp(12));
+        root.addView(chatPanel, new LinearLayout.LayoutParams(-1, 0, 1));
 
-        if ("https".equals(scheme) && (host.equals("15code.com") || host.endsWith(".15code.com"))) {
+        accountText = new TextView(this);
+        accountText.setTextColor(0xFF475569);
+        accountText.setTextSize(13);
+        accountText.setPadding(dp(4), 0, dp(4), dp(6));
+        chatPanel.addView(accountText, new LinearLayout.LayoutParams(-1, dp(34)));
+
+        modelSpinner = new Spinner(this);
+        chatPanel.addView(modelSpinner, new LinearLayout.LayoutParams(-1, dp(48)));
+
+        scroll = new ScrollView(this);
+        messageList = new LinearLayout(this);
+        messageList.setOrientation(LinearLayout.VERTICAL);
+        scroll.addView(messageList, new ScrollView.LayoutParams(-1, -2));
+        chatPanel.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        LinearLayout composer = new LinearLayout(this);
+        composer.setOrientation(LinearLayout.HORIZONTAL);
+        composer.setGravity(Gravity.BOTTOM);
+        chatPanel.addView(composer, new LinearLayout.LayoutParams(-1, dp(82)));
+
+        promptInput = new EditText(this);
+        promptInput.setHint("问点什么...");
+        promptInput.setMinLines(1);
+        promptInput.setMaxLines(4);
+        promptInput.setImeOptions(EditorInfo.IME_ACTION_SEND);
+        promptInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        promptInput.setBackground(makeBg(0xFFFFFFFF, 0xFFE2E8F0, dp(14)));
+        promptInput.setOnEditorActionListener((v, actionId, event) -> {
+            if (actionId == EditorInfo.IME_ACTION_SEND) {
+                sendMessage();
+                return true;
+            }
             return false;
-        }
-        if ("http".equals(scheme) || "https".equals(scheme) || "mailto".equals(scheme) || "tel".equals(scheme)) {
-            openExternal(uri);
-            return true;
-        }
-        return false;
+        });
+        composer.addView(promptInput, new LinearLayout.LayoutParams(0, -1, 1));
+
+        sendButton = new Button(this);
+        sendButton.setText("发送");
+        sendButton.setAllCaps(false);
+        sendButton.setOnClickListener(v -> sendMessage());
+        composer.addView(sendButton, new LinearLayout.LayoutParams(dp(84), -1));
     }
 
-    private DownloadListener downloadListener() {
-        return (url, userAgent, contentDisposition, mimeType, contentLength) -> {
-            if (!isOnline()) {
-                Toast.makeText(this, "当前网络不可用", Toast.LENGTH_SHORT).show();
-                return;
+    private void login() {
+        String email = emailInput.getText().toString().trim();
+        String password = passwordInput.getText().toString();
+        if (email.isEmpty() || password.isEmpty()) {
+            toast("请输入邮箱和密码");
+            return;
+        }
+        setBusy(true, "正在登录...");
+        new Thread(() -> {
+            try {
+                JSONObject body = new JSONObject();
+                body.put("email", email);
+                body.put("password", password);
+                JSONObject resp = postJson(PLATFORM + "/api/auth/login", body, null, true);
+                sessionToken = resp.optString("sessionToken", "");
+                if (sessionToken.isEmpty()) throw new Exception("服务端未返回 sessionToken");
+                prefs.edit().putString("sessionToken", sessionToken).apply();
+                bootstrapAccount();
+                runOnUiThread(() -> {
+                    setBusy(false, "已登录");
+                    showChat();
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    setBusy(false, "登录失败");
+                    toast(e.getMessage());
+                });
             }
-            String fileName = URLUtil.guessFileName(url, contentDisposition, mimeType);
-            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
-            request.setMimeType(mimeType);
-            request.addRequestHeader("User-Agent", userAgent);
-            request.setTitle(fileName);
-            request.setDescription("15code 下载");
-            request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-            request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName);
-            DownloadManager manager = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
-            manager.enqueue(request);
-            Toast.makeText(this, "已开始下载：" + fileName, Toast.LENGTH_SHORT).show();
-        };
+        }).start();
     }
 
-    private void openExternal(Uri uri) {
+    private void restoreSession() {
+        setBusy(true, "正在恢复会话...");
+        new Thread(() -> {
+            try {
+                bootstrapAccount();
+                runOnUiThread(() -> {
+                    setBusy(false, "已连接 15code");
+                    showChat();
+                });
+            } catch (Exception e) {
+                prefs.edit().clear().apply();
+                sessionToken = null;
+                goKey = null;
+                runOnUiThread(() -> {
+                    setBusy(false, "请重新登录");
+                    showLogin();
+                });
+            }
+        }).start();
+    }
+
+    private void bootstrapAccount() throws Exception {
+        JSONObject me = getJson(PLATFORM + "/api/me", sessionToken);
+        JSONObject user = me.optJSONObject("user");
+        accountEmail = user == null ? "" : user.optString("email", "");
+        credits = user == null ? 0 : user.optDouble("credits", 0) / 1_000_000d;
+        JSONArray tokens = getJson(PLATFORM + "/api/tokens", sessionToken).optJSONArray("tokens");
+        goKey = "";
+        if (tokens != null) {
+            for (int i = 0; i < tokens.length(); i++) {
+                JSONObject t = tokens.getJSONObject(i);
+                if ("active".equals(t.optString("status")) && !t.optString("go_key").isEmpty()) {
+                    goKey = t.optString("go_key");
+                    break;
+                }
+            }
+        }
+        if (goKey.isEmpty()) {
+            JSONObject req = new JSONObject();
+            req.put("name", "15code Android");
+            req.put("withGoKey", true);
+            goKey = postJson(PLATFORM + "/api/tokens", req, sessionToken, false).optString("goKey");
+        }
+        if (goKey.isEmpty()) throw new Exception("未找到可用 API Key");
+        prefs.edit().putString("goKey", goKey).apply();
+
+        JSONArray pricing = getJson(PLATFORM + "/api/pricing", sessionToken).optJSONArray("models");
+        models.clear();
+        if (pricing != null) {
+            for (int i = 0; i < pricing.length(); i++) {
+                JSONObject m = pricing.getJSONObject(i);
+                String id = m.optString("modelId");
+                String name = m.optString("displayName", id);
+                if (!id.isEmpty()) models.add(new Model(id, name));
+            }
+        }
+        if (models.isEmpty()) throw new Exception("未加载到可用模型");
+        if (selectedModel == null || selectedModel.isEmpty()) selectedModel = models.get(0).id;
+    }
+
+    private void sendMessage() {
+        String text = promptInput.getText().toString().trim();
+        if (text.isEmpty()) return;
+        int pos = modelSpinner.getSelectedItemPosition();
+        if (pos >= 0 && pos < models.size()) {
+            selectedModel = models.get(pos).id;
+            prefs.edit().putString("model", selectedModel).apply();
+        }
+        promptInput.setText("");
+        addBubble("你", text, true);
         try {
-            startActivity(new Intent(Intent.ACTION_VIEW, uri));
-        } catch (ActivityNotFoundException e) {
-            Toast.makeText(this, "无法打开链接", Toast.LENGTH_SHORT).show();
+            JSONObject user = new JSONObject();
+            user.put("role", "user");
+            user.put("content", text);
+            messages.put(user);
+        } catch (Exception ignored) {}
+
+        setBusy(true, "正在生成回复...");
+        sendButton.setEnabled(false);
+        new Thread(() -> {
+            try {
+                JSONObject body = new JSONObject();
+                body.put("model", selectedModel);
+                body.put("stream", false);
+                body.put("max_tokens", 4096);
+                body.put("messages", messages);
+                JSONObject resp = postJson(LLM, body, goKey, false);
+                String answer = resp.getJSONArray("choices")
+                        .getJSONObject(0)
+                        .getJSONObject("message")
+                        .optString("content", "");
+                if (answer.isEmpty()) throw new Exception("模型返回为空，请换模型重试");
+                JSONObject assistant = new JSONObject();
+                assistant.put("role", "assistant");
+                assistant.put("content", answer);
+                messages.put(assistant);
+                runOnUiThread(() -> addBubble(modelLabel(selectedModel), answer, false));
+            } catch (Exception e) {
+                runOnUiThread(() -> addBubble("错误", e.getMessage(), false));
+            } finally {
+                runOnUiThread(() -> {
+                    sendButton.setEnabled(true);
+                    setBusy(false, "已连接 15code");
+                });
+            }
+        }).start();
+    }
+
+    private JSONObject getJson(String url, String bearer) throws Exception {
+        return requestJson("GET", url, null, bearer, false);
+    }
+
+    private JSONObject postJson(String url, JSONObject body, String bearer, boolean loginMode) throws Exception {
+        return requestJson("POST", url, body, bearer, loginMode);
+    }
+
+    private JSONObject requestJson(String method, String urlText, JSONObject body, String bearer, boolean loginMode) throws Exception {
+        HttpURLConnection conn = (HttpURLConnection) new URL(urlText).openConnection();
+        conn.setConnectTimeout(20000);
+        conn.setReadTimeout(180000);
+        conn.setRequestMethod(method);
+        conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+        conn.setRequestProperty("Accept", "application/json");
+        conn.setRequestProperty("User-Agent", "15code-android-native/1.1.0");
+        if (loginMode) conn.setRequestProperty("X-Auth-Mode", "bearer");
+        if (bearer != null && !bearer.isEmpty()) conn.setRequestProperty("Authorization", "Bearer " + bearer);
+        if (body != null) {
+            conn.setDoOutput(true);
+            byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
+            conn.setRequestProperty("Content-Length", String.valueOf(bytes.length));
+            try (OutputStream out = conn.getOutputStream()) {
+                out.write(bytes);
+            }
+        }
+        int code = conn.getResponseCode();
+        String text = readAll(code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream());
+        if (code < 200 || code >= 300) throw new Exception("HTTP " + code + ": " + text);
+        return new JSONObject(text);
+    }
+
+    private String readAll(InputStream in) throws Exception {
+        if (in == null) return "";
+        BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
+        StringBuilder sb = new StringBuilder();
+        String line;
+        while ((line = reader.readLine()) != null) sb.append(line);
+        return sb.toString();
+    }
+
+    private void showLogin() {
+        loginPanel.setVisibility(View.VISIBLE);
+        chatPanel.setVisibility(View.GONE);
+        statusText.setText("请登录");
+    }
+
+    private void showChat() {
+        loginPanel.setVisibility(View.GONE);
+        chatPanel.setVisibility(View.VISIBLE);
+        accountText.setText((accountEmail == null || accountEmail.isEmpty() ? "已登录" : accountEmail)
+                + " · 余额 " + String.format("%.4f", credits));
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, modelNames());
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        modelSpinner.setAdapter(adapter);
+        int selected = 0;
+        for (int i = 0; i < models.size(); i++) if (models.get(i).id.equals(selectedModel)) selected = i;
+        modelSpinner.setSelection(selected);
+        if (messageList.getChildCount() == 0) {
+            addBubble("15code", "已登录。选择模型后输入问题即可开始。", false);
         }
     }
 
-    private boolean isOnline() {
-        ConnectivityManager manager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
-        if (manager == null) return true;
-        Network network = manager.getActiveNetwork();
-        if (network == null) return false;
-        NetworkCapabilities capabilities = manager.getNetworkCapabilities(network);
-        return capabilities != null && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+    private List<String> modelNames() {
+        List<String> names = new ArrayList<>();
+        for (Model m : models) names.add(m.name);
+        return names;
     }
 
-    private void requestNotificationPermissionIfNeeded() {
-        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, NOTIFICATION_PERMISSION_REQUEST);
-        }
+    private String modelLabel(String id) {
+        for (Model m : models) if (m.id.equals(id)) return m.name;
+        return id;
     }
 
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != FILE_CHOOSER_REQUEST || filePathCallback == null) return;
-        Uri[] result = WebChromeClient.FileChooserParams.parseResult(resultCode, data);
-        filePathCallback.onReceiveValue(result);
-        filePathCallback = null;
+    private void addBubble(String who, String text, boolean mine) {
+        TextView bubble = new TextView(this);
+        bubble.setText(who + "\n" + text);
+        bubble.setTextSize(15);
+        bubble.setTextColor(mine ? 0xFFFFFFFF : 0xFF111827);
+        bubble.setPadding(dp(12), dp(10), dp(12), dp(10));
+        bubble.setTextIsSelectable(true);
+        bubble.setBackground(makeBg(mine ? 0xFF2563EB : 0xFFFFFFFF, mine ? 0xFF2563EB : 0xFFE2E8F0, dp(14)));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.setMargins(mine ? dp(42) : 0, dp(8), mine ? 0 : dp(42), dp(8));
+        messageList.addView(bubble, lp);
+        scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
     }
 
-    @Override
-    public void onBackPressed() {
-        if (webView != null && webView.canGoBack()) {
-            webView.goBack();
-        } else {
-            super.onBackPressed();
-        }
+    private void newChat() {
+        while (messages.length() > 0) messages.remove(0);
+        messageList.removeAllViews();
+        addBubble("15code", "新对话已开始。", false);
+        promptInput.requestFocus();
     }
 
-    @Override
-    protected void onSaveInstanceState(Bundle outState) {
-        super.onSaveInstanceState(outState);
-        webView.saveState(outState);
+    private void logout() {
+        prefs.edit().clear().apply();
+        sessionToken = null;
+        goKey = null;
+        selectedModel = null;
+        accountEmail = null;
+        credits = 0;
+        models.clear();
+        while (messages.length() > 0) messages.remove(0);
+        messageList.removeAllViews();
+        showLogin();
     }
 
-    @Override
-    protected void onDestroy() {
-        if (webView != null) {
-            webView.destroy();
-        }
-        super.onDestroy();
+    private void setBusy(boolean busy, String status) {
+        progress.setVisibility(busy ? View.VISIBLE : View.GONE);
+        statusText.setText(status);
+    }
+
+    private void toast(String text) {
+        Toast.makeText(this, text == null ? "操作失败" : text, Toast.LENGTH_LONG).show();
     }
 
     private int dp(int value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
     }
-}
 
+    private GradientDrawable makeBg(int color, int stroke, int radius) {
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(color);
+        bg.setCornerRadius(radius);
+        bg.setStroke(dp(1), stroke);
+        return bg;
+    }
+
+    private static class Model {
+        final String id;
+        final String name;
+        Model(String id, String name) {
+            this.id = id;
+            this.name = name;
+        }
+    }
+}

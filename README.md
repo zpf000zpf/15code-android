@@ -1,13 +1,16 @@
 # 15code Android
 
-Android client for 15code. This first version is a lightweight native shell around `https://15code.com`, so website updates, login, pricing, docs, recharge, and model changes stay synchronized with the main platform.
+Android client for 15code. Version 1.1.0 is a native chat app that signs in with a 15code account, loads available models, and talks to the same 15code API platform used by the desktop app.
 
 ## Features
 
-- Native Android WebView container
+- Native Android login and chat interface
+- 15code account session restore
+- Model picker loaded from `/api/pricing`
+- Chat completions through `cli.15code.com`
 - 15code-branded launcher icon and splash theme
-- JavaScript, DOM storage, file chooser, downloads, and external link handling
-- Pull-to-refresh style reload from the toolbar
+- New-chat action, saved model choice, and mobile-optimized message bubbles
+- Balance/account status display after login
 - GitHub Actions build for debug APK, release APK, and release AAB
 
 ## Build
@@ -24,6 +27,5 @@ The release build uses the default unsigned Android artifact unless signing secr
 ## Release Flow
 
 1. Commit changes.
-2. Push a tag like `v1.0.0`.
+2. Push a tag like `v1.1.0`.
 3. GitHub Actions builds Android artifacts and attaches them to the release.
-
