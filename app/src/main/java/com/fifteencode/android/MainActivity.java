@@ -25,10 +25,12 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.SocketException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -38,7 +40,7 @@ public class MainActivity extends Activity {
     private static final String PLATFORM = "https://15code.com";
     private static final String LLM = "https://cli.15code.com/v1/chat/completions";
     private static final String PREFS = "15code_android";
-    private static final String APP_VERSION = "1.2.0";
+    private static final String APP_VERSION = "1.2.1";
     private static final String PREFERRED_MODEL = "qwen3.6";
 
     private SharedPreferences prefs;
@@ -386,8 +388,22 @@ public class MainActivity extends Activity {
                         messages.put(assistant);
                     } catch (Exception ignored) {}
                     runOnUiThread(() -> updateBubble(assistantBubble, modelLabel(selectedModel), answer + "\n\n[已停止]"));
+                } else if (answer.length() == 0 && isRetryableStreamError(e)) {
+                    try {
+                        runOnUiThread(() -> updateBubble(assistantBubble, modelLabel(selectedModel), "连接不稳定，正在切换普通模式..."));
+                        body.put("stream", false);
+                        String fallback = completeChat(body);
+                        if (fallback.isEmpty()) throw new Exception("模型返回为空，请换模型重试");
+                        JSONObject assistant = new JSONObject();
+                        assistant.put("role", "assistant");
+                        assistant.put("content", fallback);
+                        messages.put(assistant);
+                        runOnUiThread(() -> updateBubble(assistantBubble, modelLabel(selectedModel), fallback));
+                    } catch (Exception fallbackError) {
+                        runOnUiThread(() -> updateBubble(assistantBubble, "错误", friendlyError(fallbackError)));
+                    }
                 } else if (answer.length() == 0) {
-                    runOnUiThread(() -> updateBubble(assistantBubble, "错误", e.getMessage()));
+                    runOnUiThread(() -> updateBubble(assistantBubble, "错误", friendlyError(e)));
                 } else {
                     runOnUiThread(() -> updateBubble(assistantBubble, modelLabel(selectedModel), answer + "\n\n[连接中断]"));
                 }
@@ -440,6 +456,45 @@ public class MainActivity extends Activity {
                 if (!chunk.isEmpty()) handler.onChunk(chunk);
             }
         }
+    }
+
+    private String completeChat(JSONObject body) throws Exception {
+        JSONObject resp = postJson(LLM, body, goKey, false);
+        JSONArray choices = resp.optJSONArray("choices");
+        if (choices == null || choices.length() == 0) return "";
+        JSONObject choice = choices.optJSONObject(0);
+        if (choice == null) return "";
+        JSONObject message = choice.optJSONObject("message");
+        return message == null ? "" : message.optString("content", "");
+    }
+
+    private boolean isRetryableStreamError(Exception e) {
+        Throwable cur = e;
+        while (cur != null) {
+            if (cur instanceof SocketException || cur instanceof IOException) {
+                String msg = cur.getMessage() == null ? "" : cur.getMessage().toLowerCase();
+                return msg.contains("software caused connection abort")
+                        || msg.contains("connection reset")
+                        || msg.contains("unexpected end")
+                        || msg.contains("eof")
+                        || msg.contains("read error");
+            }
+            cur = cur.getCause();
+        }
+        return false;
+    }
+
+    private String friendlyError(Exception e) {
+        String msg = e.getMessage();
+        if (msg == null || msg.trim().isEmpty()) return "请求失败，请稍后重试";
+        String lower = msg.toLowerCase();
+        if (lower.contains("software caused connection abort")
+                || lower.contains("connection reset")
+                || lower.contains("unexpected end")
+                || lower.contains("eof")) {
+            return "连接中断，请重试";
+        }
+        return msg;
     }
 
     private JSONObject getJson(String url, String bearer) throws Exception {
