@@ -1,12 +1,12 @@
 # 15code Android
 
-Android client for 15code. Version 1.2.2 is a native chat app that signs in with a 15code account, loads available models, and streams replies from the same 15code API platform used by the desktop app.
+Android client for 15code. Version 1.2.3 is a native chat app that signs in with a 15code account, loads available models, and streams replies from the same 15code API platform used by the desktop app.
 
 ## Features
 
 - Native Android login and chat interface
 - 15code account session restore
-- Model picker loaded from `/api/pricing`
+- Model picker loaded from `/api/pricing`, optimized for phone selection
 - Chat completions through `cli.15code.com`
 - Streaming replies with a stop button
 - Automatic non-stream fallback when Android aborts a streaming socket

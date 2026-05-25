@@ -1,6 +1,8 @@
 package com.fifteencode.android;
 
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -10,14 +12,12 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
-import android.widget.AdapterView;
-import android.widget.ArrayAdapter;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
-import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -40,7 +40,7 @@ public class MainActivity extends Activity {
     private static final String PLATFORM = "https://15code.com";
     private static final String LLM = "https://cli.15code.com/v1/chat/completions";
     private static final String PREFS = "15code_android";
-    private static final String APP_VERSION = "1.2.2";
+    private static final String APP_VERSION = "1.2.3";
     private static final String PREFERRED_MODEL = "qwen3.6";
 
     private SharedPreferences prefs;
@@ -62,7 +62,7 @@ public class MainActivity extends Activity {
     private EditText emailInput;
     private EditText passwordInput;
     private EditText promptInput;
-    private Spinner modelSpinner;
+    private Button modelButton;
     private TextView statusText;
     private TextView accountText;
     private Button newChatButton;
@@ -188,21 +188,13 @@ public class MainActivity extends Activity {
         accountText.setPadding(dp(4), 0, dp(4), dp(6));
         chatPanel.addView(accountText, new LinearLayout.LayoutParams(-1, dp(34)));
 
-        modelSpinner = new Spinner(this);
-        modelSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override
-            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                if (position >= 0 && position < models.size()) {
-                    selectedModel = models.get(position).id;
-                    prefs.edit().putString("model", selectedModel).apply();
-                    statusText.setText("当前模型 · " + modelLabel(selectedModel));
-                }
-            }
-
-            @Override
-            public void onNothingSelected(AdapterView<?> parent) {}
-        });
-        chatPanel.addView(modelSpinner, new LinearLayout.LayoutParams(-1, dp(48)));
+        modelButton = new Button(this);
+        modelButton.setText("选择模型");
+        modelButton.setAllCaps(false);
+        modelButton.setGravity(Gravity.CENTER_VERTICAL);
+        modelButton.setPadding(dp(12), 0, dp(12), 0);
+        modelButton.setOnClickListener(v -> showModelPicker());
+        chatPanel.addView(modelButton, new LinearLayout.LayoutParams(-1, dp(48)));
 
         scroll = new ScrollView(this);
         messageList = new LinearLayout(this);
@@ -217,13 +209,24 @@ public class MainActivity extends Activity {
 
         promptInput = new EditText(this);
         promptInput.setHint("发消息给 15code");
+        promptInput.setFocusable(true);
+        promptInput.setFocusableInTouchMode(true);
+        promptInput.setClickable(true);
+        promptInput.setCursorVisible(true);
         promptInput.setMinLines(1);
         promptInput.setMaxLines(4);
         promptInput.setImeOptions(EditorInfo.IME_ACTION_SEND | EditorInfo.IME_FLAG_NO_EXTRACT_UI);
         promptInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         promptInput.setBackground(makeBg(0xFFFFFFFF, 0xFFE2E8F0, dp(14)));
         promptInput.setOnFocusChangeListener((v, hasFocus) -> {
-            if (hasFocus) scroll.postDelayed(() -> scroll.fullScroll(View.FOCUS_DOWN), 250);
+            if (hasFocus) {
+                scroll.postDelayed(() -> scroll.fullScroll(View.FOCUS_DOWN), 250);
+                promptInput.postDelayed(() -> openKeyboard(promptInput), 80);
+            }
+        });
+        promptInput.setOnClickListener(v -> {
+            promptInput.requestFocus();
+            openKeyboard(promptInput);
         });
         promptInput.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_SEND) {
@@ -346,11 +349,6 @@ public class MainActivity extends Activity {
     private void sendMessage() {
         String text = promptInput.getText().toString().trim();
         if (text.isEmpty()) return;
-        int pos = modelSpinner.getSelectedItemPosition();
-        if (pos >= 0 && pos < models.size()) {
-            selectedModel = models.get(pos).id;
-            prefs.edit().putString("model", selectedModel).apply();
-        }
         promptInput.setText("");
         addBubble("你", text, true);
         try {
@@ -553,12 +551,7 @@ public class MainActivity extends Activity {
         logoutButton.setVisibility(View.VISIBLE);
         accountText.setText((accountEmail == null || accountEmail.isEmpty() ? "已登录" : accountEmail)
                 + " · 余额 " + String.format("%.4f", credits));
-        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, modelNames());
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        modelSpinner.setAdapter(adapter);
-        int selected = 0;
-        for (int i = 0; i < models.size(); i++) if (models.get(i).id.equals(selectedModel)) selected = i;
-        modelSpinner.setSelection(selected);
+        updateModelButton();
         if (messageList.getChildCount() == 0) {
             addBubble("15code", "已连接。", false);
         }
@@ -568,6 +561,37 @@ public class MainActivity extends Activity {
         List<String> names = new ArrayList<>();
         for (Model m : models) names.add(m.name + "  ·  " + m.id);
         return names;
+    }
+
+    private void showModelPicker() {
+        if (models.isEmpty()) {
+            toast("模型列表还没有加载完成");
+            return;
+        }
+        String[] labels = modelNames().toArray(new String[0]);
+        int selected = 0;
+        for (int i = 0; i < models.size(); i++) {
+            if (models.get(i).id.equals(selectedModel)) {
+                selected = i;
+                break;
+            }
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("选择模型")
+                .setSingleChoiceItems(labels, selected, (dialog, which) -> {
+                    selectedModel = models.get(which).id;
+                    prefs.edit().putString("model", selectedModel).apply();
+                    updateModelButton();
+                    dialog.dismiss();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void updateModelButton() {
+        String label = modelLabel(selectedModel);
+        modelButton.setText(label + "\n" + selectedModel);
+        statusText.setText("当前模型 · " + label);
     }
 
     private String modelLabel(String id) {
@@ -600,6 +624,7 @@ public class MainActivity extends Activity {
         messageList.removeAllViews();
         addBubble("15code", "新对话已开始。", false);
         promptInput.requestFocus();
+        promptInput.postDelayed(() -> openKeyboard(promptInput), 120);
     }
 
     private void logout() {
@@ -638,6 +663,11 @@ public class MainActivity extends Activity {
 
     private void toast(String text) {
         Toast.makeText(this, text == null ? "操作失败" : text, Toast.LENGTH_LONG).show();
+    }
+
+    private void openKeyboard(View view) {
+        InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (imm != null) imm.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT);
     }
 
     private int dp(int value) {
