@@ -8,7 +8,9 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.text.InputType;
+import android.text.method.TextKeyListener;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
@@ -40,7 +42,7 @@ public class MainActivity extends Activity {
     private static final String PLATFORM = "https://15code.com";
     private static final String LLM = "https://cli.15code.com/v1/chat/completions";
     private static final String PREFS = "15code_android";
-    private static final String APP_VERSION = "1.2.3";
+    private static final String APP_VERSION = "1.2.4";
     private static final String PREFERRED_MODEL = "qwen3.6";
 
     private SharedPreferences prefs;
@@ -213,10 +215,18 @@ public class MainActivity extends Activity {
         promptInput.setFocusableInTouchMode(true);
         promptInput.setClickable(true);
         promptInput.setCursorVisible(true);
+        promptInput.setLongClickable(true);
+        promptInput.setTextIsSelectable(false);
         promptInput.setMinLines(1);
         promptInput.setMaxLines(4);
-        promptInput.setImeOptions(EditorInfo.IME_ACTION_SEND | EditorInfo.IME_FLAG_NO_EXTRACT_UI);
-        promptInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        promptInput.setSingleLine(false);
+        promptInput.setHorizontallyScrolling(false);
+        promptInput.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        promptInput.setImeOptions(EditorInfo.IME_ACTION_NONE | EditorInfo.IME_FLAG_NO_EXTRACT_UI);
+        promptInput.setInputType(InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        promptInput.setKeyListener(TextKeyListener.getInstance());
         promptInput.setBackground(makeBg(0xFFFFFFFF, 0xFFE2E8F0, dp(14)));
         promptInput.setOnFocusChangeListener((v, hasFocus) -> {
             if (hasFocus) {
@@ -224,16 +234,16 @@ public class MainActivity extends Activity {
                 promptInput.postDelayed(() -> openKeyboard(promptInput), 80);
             }
         });
+        promptInput.setOnTouchListener((v, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_UP) {
+                promptInput.requestFocus();
+                promptInput.postDelayed(() -> openKeyboard(promptInput), 50);
+            }
+            return false;
+        });
         promptInput.setOnClickListener(v -> {
             promptInput.requestFocus();
             openKeyboard(promptInput);
-        });
-        promptInput.setOnEditorActionListener((v, actionId, event) -> {
-            if (actionId == EditorInfo.IME_ACTION_SEND) {
-                sendMessage();
-                return true;
-            }
-            return false;
         });
         composer.addView(promptInput, new LinearLayout.LayoutParams(0, -1, 1));
 
@@ -348,7 +358,52 @@ public class MainActivity extends Activity {
 
     private void sendMessage() {
         String text = promptInput.getText().toString().trim();
-        if (text.isEmpty()) return;
+        if (text.isEmpty()) {
+            openComposerDialog();
+            return;
+        }
+        sendMessageText(text);
+    }
+
+    private void openComposerDialog() {
+        EditText input = new EditText(this);
+        input.setHint("输入消息");
+        input.setMinLines(3);
+        input.setMaxLines(8);
+        input.setSingleLine(false);
+        input.setInputType(InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        input.setImeOptions(EditorInfo.IME_FLAG_NO_EXTRACT_UI);
+        int pad = dp(16);
+        input.setPadding(pad, dp(10), pad, dp(10));
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("输入消息")
+                .setView(input)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("发送", null)
+                .create();
+        dialog.setOnShowListener(d -> {
+            if (dialog.getWindow() != null) {
+                dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE
+                        | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+            }
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                String text = input.getText().toString().trim();
+                if (text.isEmpty()) {
+                    toast("请输入消息");
+                    return;
+                }
+                dialog.dismiss();
+                sendMessageText(text);
+            });
+            input.requestFocus();
+            input.postDelayed(() -> openKeyboard(input), 120);
+        });
+        dialog.show();
+    }
+
+    private void sendMessageText(String text) {
         promptInput.setText("");
         addBubble("你", text, true);
         try {
