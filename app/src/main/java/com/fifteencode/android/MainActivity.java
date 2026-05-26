@@ -8,9 +8,7 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.text.InputType;
-import android.text.method.TextKeyListener;
 import android.view.Gravity;
-import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
@@ -42,7 +40,7 @@ public class MainActivity extends Activity {
     private static final String PLATFORM = "https://15code.com";
     private static final String LLM = "https://cli.15code.com/v1/chat/completions";
     private static final String PREFS = "15code_android";
-    private static final String APP_VERSION = "1.2.4";
+    private static final String APP_VERSION = "1.2.5";
     private static final String PREFERRED_MODEL = "qwen3.6";
 
     private SharedPreferences prefs;
@@ -211,36 +209,22 @@ public class MainActivity extends Activity {
 
         promptInput = new EditText(this);
         promptInput.setHint("发消息给 15code");
-        promptInput.setFocusable(true);
-        promptInput.setFocusableInTouchMode(true);
-        promptInput.setClickable(true);
-        promptInput.setCursorVisible(true);
-        promptInput.setLongClickable(true);
-        promptInput.setTextIsSelectable(false);
+        promptInput.setTextColor(0xFF111827);
+        promptInput.setHintTextColor(0xFF94A3B8);
+        promptInput.setTextSize(16);
         promptInput.setMinLines(1);
         promptInput.setMaxLines(4);
         promptInput.setSingleLine(false);
-        promptInput.setHorizontallyScrolling(false);
         promptInput.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
-        promptInput.setImeOptions(EditorInfo.IME_ACTION_NONE | EditorInfo.IME_FLAG_NO_EXTRACT_UI);
+        promptInput.setPadding(dp(14), 0, dp(14), 0);
+        promptInput.setFocusable(true);
+        promptInput.setFocusableInTouchMode(true);
+        promptInput.setCursorVisible(true);
         promptInput.setInputType(InputType.TYPE_CLASS_TEXT
                 | InputType.TYPE_TEXT_FLAG_MULTI_LINE
                 | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
-        promptInput.setKeyListener(TextKeyListener.getInstance());
+        promptInput.setImeOptions(EditorInfo.IME_FLAG_NO_EXTRACT_UI);
         promptInput.setBackground(makeBg(0xFFFFFFFF, 0xFFE2E8F0, dp(14)));
-        promptInput.setOnFocusChangeListener((v, hasFocus) -> {
-            if (hasFocus) {
-                scroll.postDelayed(() -> scroll.fullScroll(View.FOCUS_DOWN), 250);
-                promptInput.postDelayed(() -> openKeyboard(promptInput), 80);
-            }
-        });
-        promptInput.setOnTouchListener((v, event) -> {
-            if (event.getAction() == MotionEvent.ACTION_UP) {
-                promptInput.requestFocus();
-                promptInput.postDelayed(() -> openKeyboard(promptInput), 50);
-            }
-            return false;
-        });
         promptInput.setOnClickListener(v -> {
             promptInput.requestFocus();
             openKeyboard(promptInput);
@@ -359,7 +343,8 @@ public class MainActivity extends Activity {
     private void sendMessage() {
         String text = promptInput.getText().toString().trim();
         if (text.isEmpty()) {
-            openComposerDialog();
+            promptInput.requestFocus();
+            openKeyboard(promptInput);
             return;
         }
         sendMessageText(text);
@@ -679,7 +664,6 @@ public class MainActivity extends Activity {
         messageList.removeAllViews();
         addBubble("15code", "新对话已开始。", false);
         promptInput.requestFocus();
-        promptInput.postDelayed(() -> openKeyboard(promptInput), 120);
     }
 
     private void logout() {
@@ -706,7 +690,7 @@ public class MainActivity extends Activity {
         progress.setVisibility(active ? View.VISIBLE : View.GONE);
         statusText.setText(active ? "正在生成 · " + modelLabel(selectedModel) : "已连接 15code");
         sendButton.setText(active ? "停止" : "发送");
-        promptInput.setEnabled(true);
+        promptInput.setEnabled(!active);
     }
 
     private void stopStreaming() {
