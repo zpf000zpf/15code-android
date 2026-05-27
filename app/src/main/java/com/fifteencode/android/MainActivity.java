@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
@@ -40,7 +41,7 @@ public class MainActivity extends Activity {
     private static final String PLATFORM = "https://15code.com";
     private static final String LLM = "https://cli.15code.com/v1/chat/completions";
     private static final String PREFS = "15code_android";
-    private static final String APP_VERSION = "1.2.5";
+    private static final String APP_VERSION = "1.2.6";
     private static final String PREFERRED_MODEL = "qwen3.6";
 
     private SharedPreferences prefs;
@@ -59,6 +60,7 @@ public class MainActivity extends Activity {
     private LinearLayout loginPanel;
     private LinearLayout chatPanel;
     private LinearLayout messageList;
+    private LinearLayout composer;
     private EditText emailInput;
     private EditText passwordInput;
     private EditText promptInput;
@@ -93,13 +95,13 @@ public class MainActivity extends Activity {
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
         header.setPadding(dp(16), dp(12), dp(12), dp(12));
-        header.setBackgroundColor(0xFF0F172A);
-        root.addView(header, new LinearLayout.LayoutParams(-1, dp(64)));
+        header.setBackgroundColor(0xFF111827);
+        root.addView(header, new LinearLayout.LayoutParams(-1, dp(60)));
 
         TextView title = new TextView(this);
         title.setText("15code");
         title.setTextColor(0xFFFFFFFF);
-        title.setTextSize(22);
+        title.setTextSize(21);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setGravity(Gravity.CENTER_VERTICAL);
         header.addView(title, new LinearLayout.LayoutParams(0, -1, 1));
@@ -179,7 +181,7 @@ public class MainActivity extends Activity {
     private void buildChatPanel() {
         chatPanel = new LinearLayout(this);
         chatPanel.setOrientation(LinearLayout.VERTICAL);
-        chatPanel.setPadding(dp(12), dp(8), dp(12), dp(12));
+        chatPanel.setPadding(dp(12), dp(8), dp(12), dp(8));
         root.addView(chatPanel, new LinearLayout.LayoutParams(-1, 0, 1));
 
         accountText = new TextView(this);
@@ -193,6 +195,8 @@ public class MainActivity extends Activity {
         modelButton.setAllCaps(false);
         modelButton.setGravity(Gravity.CENTER_VERTICAL);
         modelButton.setPadding(dp(12), 0, dp(12), 0);
+        modelButton.setTextColor(0xFF0F172A);
+        modelButton.setBackground(makeBg(0xFFFFFFFF, 0xFFE2E8F0, dp(12)));
         modelButton.setOnClickListener(v -> showModelPicker());
         chatPanel.addView(modelButton, new LinearLayout.LayoutParams(-1, dp(48)));
 
@@ -202,10 +206,11 @@ public class MainActivity extends Activity {
         scroll.addView(messageList, new ScrollView.LayoutParams(-1, -2));
         chatPanel.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
 
-        LinearLayout composer = new LinearLayout(this);
+        composer = new LinearLayout(this);
         composer.setOrientation(LinearLayout.HORIZONTAL);
         composer.setGravity(Gravity.BOTTOM);
-        chatPanel.addView(composer, new LinearLayout.LayoutParams(-1, dp(82)));
+        composer.setPadding(0, dp(8), 0, 0);
+        chatPanel.addView(composer, new LinearLayout.LayoutParams(-1, dp(72)));
 
         promptInput = new EditText(this);
         promptInput.setHint("发消息给 15code");
@@ -213,7 +218,7 @@ public class MainActivity extends Activity {
         promptInput.setHintTextColor(0xFF94A3B8);
         promptInput.setTextSize(16);
         promptInput.setMinLines(1);
-        promptInput.setMaxLines(4);
+        promptInput.setMaxLines(3);
         promptInput.setSingleLine(false);
         promptInput.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
         promptInput.setPadding(dp(14), 0, dp(14), 0);
@@ -224,21 +229,26 @@ public class MainActivity extends Activity {
                 | InputType.TYPE_TEXT_FLAG_MULTI_LINE
                 | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
         promptInput.setImeOptions(EditorInfo.IME_FLAG_NO_EXTRACT_UI);
-        promptInput.setBackground(makeBg(0xFFFFFFFF, 0xFFE2E8F0, dp(14)));
+        promptInput.setBackground(makeBg(0xFFFFFFFF, 0xFFCBD5E1, dp(18)));
         promptInput.setOnClickListener(v -> {
             promptInput.requestFocus();
             openKeyboard(promptInput);
         });
-        composer.addView(promptInput, new LinearLayout.LayoutParams(0, -1, 1));
+        LinearLayout.LayoutParams inputLp = new LinearLayout.LayoutParams(0, dp(56), 1);
+        inputLp.setMargins(0, 0, dp(8), 0);
+        composer.addView(promptInput, inputLp);
 
         sendButton = new Button(this);
         sendButton.setText("发送");
         sendButton.setAllCaps(false);
+        sendButton.setTextColor(0xFFFFFFFF);
+        sendButton.setBackground(makeBg(0xFF2563EB, 0xFF2563EB, dp(18)));
         sendButton.setOnClickListener(v -> {
             if (streaming) stopStreaming();
             else sendMessage();
         });
-        composer.addView(sendButton, new LinearLayout.LayoutParams(dp(84), -1));
+        composer.addView(sendButton, new LinearLayout.LayoutParams(dp(76), dp(56)));
+        installKeyboardAvoidance();
     }
 
     private void login() {
@@ -707,6 +717,21 @@ public class MainActivity extends Activity {
     private void openKeyboard(View view) {
         InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
         if (imm != null) imm.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT);
+    }
+
+    private void installKeyboardAvoidance() {
+        root.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
+            Rect visible = new Rect();
+            root.getWindowVisibleDisplayFrame(visible);
+            int fullHeight = root.getRootView().getHeight();
+            int hidden = fullHeight - visible.bottom;
+            int keyboardHeight = hidden > dp(140) ? hidden : 0;
+            composer.setTranslationY(-keyboardHeight);
+            scroll.setPadding(0, 0, 0, keyboardHeight == 0 ? 0 : keyboardHeight + dp(12));
+            if (keyboardHeight > 0 && promptInput.hasFocus()) {
+                scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
+            }
+        });
     }
 
     private int dp(int value) {
