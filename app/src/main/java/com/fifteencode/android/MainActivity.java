@@ -3,12 +3,15 @@ package com.fifteencode.android;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
 import android.os.Bundle;
 import android.text.InputType;
+import android.util.Base64;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
@@ -26,6 +29,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -41,14 +45,19 @@ public class MainActivity extends Activity {
     private static final String PLATFORM = "https://15code.com";
     private static final String LLM = "https://cli.15code.com/v1/chat/completions";
     private static final String PREFS = "15code_android";
-    private static final String APP_VERSION = "1.2.6";
+    private static final String APP_VERSION = "1.2.7";
     private static final String PREFERRED_MODEL = "qwen3.6";
+    private static final int PICK_IMAGE_REQUEST = 7301;
+    private static final int MAX_HISTORY_MESSAGES = 20;
+    private static final int MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 
     private SharedPreferences prefs;
     private String sessionToken;
     private String goKey;
     private String selectedModel;
     private String accountEmail;
+    private String selectedImageDataUrl;
+    private String selectedImageName;
     private double credits;
     private volatile boolean streaming;
     private volatile boolean stopRequested;
@@ -69,6 +78,7 @@ public class MainActivity extends Activity {
     private TextView accountText;
     private Button newChatButton;
     private Button logoutButton;
+    private Button attachButton;
     private Button sendButton;
     private ProgressBar progress;
     private ScrollView scroll;
@@ -83,6 +93,29 @@ public class MainActivity extends Activity {
         selectedModel = prefs.getString("model", null);
         buildUi();
         if (sessionToken != null) restoreSession();
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != PICK_IMAGE_REQUEST || resultCode != RESULT_OK || data == null || data.getData() == null) {
+            return;
+        }
+        try {
+            Uri uri = data.getData();
+            String mime = getContentResolver().getType(uri);
+            if (mime == null || !mime.startsWith("image/")) mime = "image/jpeg";
+            byte[] bytes = readLimitedBytes(uri, MAX_IMAGE_BYTES);
+            selectedImageDataUrl = "data:" + mime + ";base64," + Base64.encodeToString(bytes, Base64.NO_WRAP);
+            selectedImageName = "图片";
+            attachButton.setText("图");
+            statusText.setText("已附加图片，需选择支持视觉的模型");
+        } catch (Exception e) {
+            selectedImageDataUrl = null;
+            selectedImageName = null;
+            attachButton.setText("+");
+            toast(e.getMessage());
+        }
     }
 
     private void buildUi() {
@@ -238,6 +271,16 @@ public class MainActivity extends Activity {
         inputLp.setMargins(0, 0, dp(8), 0);
         composer.addView(promptInput, inputLp);
 
+        attachButton = new Button(this);
+        attachButton.setText("+");
+        attachButton.setAllCaps(false);
+        attachButton.setTextColor(0xFF0F172A);
+        attachButton.setBackground(makeBg(0xFFFFFFFF, 0xFFCBD5E1, dp(18)));
+        attachButton.setOnClickListener(v -> pickImage());
+        LinearLayout.LayoutParams attachLp = new LinearLayout.LayoutParams(dp(48), dp(56));
+        attachLp.setMargins(0, 0, dp(8), 0);
+        composer.addView(attachButton, attachLp);
+
         sendButton = new Button(this);
         sendButton.setText("发送");
         sendButton.setAllCaps(false);
@@ -352,7 +395,7 @@ public class MainActivity extends Activity {
 
     private void sendMessage() {
         String text = promptInput.getText().toString().trim();
-        if (text.isEmpty()) {
+        if (text.isEmpty() && selectedImageDataUrl == null) {
             promptInput.requestFocus();
             openKeyboard(promptInput);
             return;
@@ -400,12 +443,22 @@ public class MainActivity extends Activity {
 
     private void sendMessageText(String text) {
         promptInput.setText("");
-        addBubble("你", text, true);
+        String attachedImage = selectedImageDataUrl;
+        String imageName = selectedImageName;
+        selectedImageDataUrl = null;
+        selectedImageName = null;
+        attachButton.setText("+");
+
+        String displayText = text.isEmpty() ? "[图片]" : text;
+        if (attachedImage != null) displayText += "\n[已附加图片]";
+        addBubble("你", displayText, true);
         try {
             JSONObject user = new JSONObject();
             user.put("role", "user");
-            user.put("content", text);
+            user.put("content", text.isEmpty() ? "[图片]" : text);
             messages.put(user);
+            trimMessages();
+            saveChatHistory();
         } catch (Exception ignored) {}
 
         TextView assistantBubble = addBubble(modelLabel(selectedModel), "正在思考...", false);
@@ -417,7 +470,7 @@ public class MainActivity extends Activity {
                 body.put("model", selectedModel);
                 body.put("stream", true);
                 body.put("max_tokens", 4096);
-                body.put("messages", messages);
+                body.put("messages", buildRequestMessages(text, attachedImage));
                 streamChat(body, chunk -> {
                     answer.append(chunk);
                     runOnUiThread(() -> updateBubble(assistantBubble, modelLabel(selectedModel), answer.toString()));
@@ -427,6 +480,8 @@ public class MainActivity extends Activity {
                 assistant.put("role", "assistant");
                 assistant.put("content", answer.toString());
                 messages.put(assistant);
+                trimMessages();
+                saveChatHistory();
             } catch (Exception e) {
                 if (stopRequested && answer.length() > 0) {
                     try {
@@ -434,6 +489,8 @@ public class MainActivity extends Activity {
                         assistant.put("role", "assistant");
                         assistant.put("content", answer.toString());
                         messages.put(assistant);
+                        trimMessages();
+                        saveChatHistory();
                     } catch (Exception ignored) {}
                     runOnUiThread(() -> updateBubble(assistantBubble, modelLabel(selectedModel), answer + "\n\n[已停止]"));
                 } else if (answer.length() == 0 && isRetryableStreamError(e)) {
@@ -446,6 +503,8 @@ public class MainActivity extends Activity {
                         assistant.put("role", "assistant");
                         assistant.put("content", fallback);
                         messages.put(assistant);
+                        trimMessages();
+                        saveChatHistory();
                         runOnUiThread(() -> updateBubble(assistantBubble, modelLabel(selectedModel), fallback));
                     } catch (Exception fallbackError) {
                         runOnUiThread(() -> updateBubble(assistantBubble, "错误", friendlyError(fallbackError)));
@@ -460,6 +519,42 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> setStreamingUi(false));
             }
         }).start();
+    }
+
+    private JSONArray buildRequestMessages(String text, String imageDataUrl) throws Exception {
+        JSONArray out = new JSONArray();
+        int last = messages.length() - 1;
+        for (int i = 0; i < messages.length(); i++) {
+            JSONObject src = messages.getJSONObject(i);
+            JSONObject dst = new JSONObject();
+            dst.put("role", src.optString("role"));
+            if (i == last && imageDataUrl != null && "user".equals(src.optString("role"))) {
+                JSONArray content = new JSONArray();
+                JSONObject textPart = new JSONObject();
+                textPart.put("type", "text");
+                textPart.put("text", text == null || text.isEmpty() ? "请分析这张图片" : text);
+                content.put(textPart);
+                JSONObject imageUrl = new JSONObject();
+                imageUrl.put("url", imageDataUrl);
+                JSONObject imagePart = new JSONObject();
+                imagePart.put("type", "image_url");
+                imagePart.put("image_url", imageUrl);
+                content.put(imagePart);
+                dst.put("content", content);
+            } else {
+                dst.put("content", src.optString("content", ""));
+            }
+            out.put(dst);
+        }
+        return out;
+    }
+
+    private void trimMessages() {
+        while (messages.length() > MAX_HISTORY_MESSAGES) messages.remove(0);
+    }
+
+    private void saveChatHistory() {
+        prefs.edit().putString("chatHistory", messages.toString()).apply();
     }
 
     private void streamChat(JSONObject body, StreamHandler handler) throws Exception {
@@ -603,7 +698,34 @@ public class MainActivity extends Activity {
                 + " · 余额 " + String.format("%.4f", credits));
         updateModelButton();
         if (messageList.getChildCount() == 0) {
+            loadChatHistory();
+        }
+        if (messageList.getChildCount() == 0) {
             addBubble("15code", "已连接。", false);
+        }
+    }
+
+    private void loadChatHistory() {
+        String raw = prefs.getString("chatHistory", "");
+        if (raw == null || raw.isEmpty()) return;
+        try {
+            JSONArray saved = new JSONArray(raw);
+            while (messages.length() > 0) messages.remove(0);
+            int start = Math.max(0, saved.length() - MAX_HISTORY_MESSAGES);
+            for (int i = start; i < saved.length(); i++) {
+                JSONObject src = saved.getJSONObject(i);
+                String role = src.optString("role");
+                String content = src.optString("content");
+                if ((!role.equals("user") && !role.equals("assistant")) || content.isEmpty()) continue;
+                JSONObject msg = new JSONObject();
+                msg.put("role", role);
+                msg.put("content", content);
+                messages.put(msg);
+                addBubble(role.equals("user") ? "你" : modelLabel(selectedModel), content, role.equals("user"));
+            }
+            trimMessages();
+        } catch (Exception ignored) {
+            prefs.edit().remove("chatHistory").apply();
         }
     }
 
@@ -671,6 +793,10 @@ public class MainActivity extends Activity {
 
     private void newChat() {
         while (messages.length() > 0) messages.remove(0);
+        prefs.edit().remove("chatHistory").apply();
+        selectedImageDataUrl = null;
+        selectedImageName = null;
+        attachButton.setText("+");
         messageList.removeAllViews();
         addBubble("15code", "新对话已开始。", false);
         promptInput.requestFocus();
@@ -717,6 +843,29 @@ public class MainActivity extends Activity {
     private void openKeyboard(View view) {
         InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
         if (imm != null) imm.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT);
+    }
+
+    private void pickImage() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("image/*");
+        startActivityForResult(intent, PICK_IMAGE_REQUEST);
+    }
+
+    private byte[] readLimitedBytes(Uri uri, int limit) throws Exception {
+        try (InputStream in = getContentResolver().openInputStream(uri);
+             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            if (in == null) throw new Exception("无法读取图片");
+            byte[] buf = new byte[8192];
+            int total = 0;
+            int n;
+            while ((n = in.read(buf)) != -1) {
+                total += n;
+                if (total > limit) throw new Exception("图片过大，请选择 4 MB 以内的图片");
+                out.write(buf, 0, n);
+            }
+            return out.toByteArray();
+        }
     }
 
     private void installKeyboardAvoidance() {
