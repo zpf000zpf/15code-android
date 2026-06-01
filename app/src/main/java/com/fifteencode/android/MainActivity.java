@@ -13,6 +13,7 @@ import android.os.Bundle;
 import android.text.InputType;
 import android.util.Base64;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
@@ -45,7 +46,7 @@ public class MainActivity extends Activity {
     private static final String PLATFORM = "https://15code.com";
     private static final String LLM = "https://cli.15code.com/v1/chat/completions";
     private static final String PREFS = "15code_android";
-    private static final String APP_VERSION = "1.2.7";
+    private static final String APP_VERSION = "1.2.8";
     private static final String PREFERRED_MODEL = "qwen3.6";
     private static final int PICK_IMAGE_REQUEST = 7301;
     private static final int MAX_HISTORY_MESSAGES = 20;
@@ -263,9 +264,15 @@ public class MainActivity extends Activity {
                 | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
         promptInput.setImeOptions(EditorInfo.IME_FLAG_NO_EXTRACT_UI);
         promptInput.setBackground(makeBg(0xFFFFFFFF, 0xFFCBD5E1, dp(18)));
-        promptInput.setOnClickListener(v -> {
-            promptInput.requestFocus();
-            openKeyboard(promptInput);
+        promptInput.setOnFocusChangeListener((v, hasFocus) -> {
+            if (hasFocus) promptInput.postDelayed(() -> openKeyboard(promptInput), 60);
+        });
+        promptInput.setOnTouchListener((v, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_DOWN) {
+                promptInput.requestFocusFromTouch();
+                promptInput.postDelayed(() -> openKeyboard(promptInput), 40);
+            }
+            return false;
         });
         LinearLayout.LayoutParams inputLp = new LinearLayout.LayoutParams(0, dp(56), 1);
         inputLp.setMargins(0, 0, dp(8), 0);
