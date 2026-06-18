@@ -13,6 +13,7 @@ import android.os.Bundle;
 import android.text.InputType;
 import android.util.Base64;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
@@ -44,8 +45,10 @@ import java.util.List;
 public class MainActivity extends Activity {
     private static final String PLATFORM = "https://15code.com";
     private static final String LLM = "https://cli.15code.com/v1/chat/completions";
+    private static final String ANDROID_RELEASES = "https://github.com/zpf000zpf/15code-android/releases";
+    private static final String ANDROID_LATEST_RELEASE = "https://api.github.com/repos/zpf000zpf/15code-android/releases/latest";
     private static final String PREFS = "15code_android";
-    private static final String APP_VERSION = "1.2.9";
+    private static final String APP_VERSION = "1.3.0";
     private static final String PREFERRED_MODEL = "qwen3.6";
     private static final int PICK_IMAGE_REQUEST = 7301;
     private static final int MAX_HISTORY_MESSAGES = 20;
@@ -77,6 +80,7 @@ public class MainActivity extends Activity {
     private TextView statusText;
     private TextView accountText;
     private Button newChatButton;
+    private Button updateButton;
     private Button logoutButton;
     private Button attachButton;
     private Button sendButton;
@@ -93,6 +97,7 @@ public class MainActivity extends Activity {
         selectedModel = prefs.getString("model", null);
         buildUi();
         if (sessionToken != null) restoreSession();
+        root.postDelayed(() -> checkAppUpdate(false), 1800);
     }
 
     @Override
@@ -144,6 +149,12 @@ public class MainActivity extends Activity {
         newChatButton.setAllCaps(false);
         newChatButton.setOnClickListener(v -> newChat());
         header.addView(newChatButton, new LinearLayout.LayoutParams(dp(88), dp(42)));
+
+        updateButton = new Button(this);
+        updateButton.setText("更新");
+        updateButton.setAllCaps(false);
+        updateButton.setOnClickListener(v -> checkAppUpdate(true));
+        header.addView(updateButton, new LinearLayout.LayoutParams(dp(68), dp(42)));
 
         logoutButton = new Button(this);
         logoutButton.setText("退出");
@@ -263,9 +274,21 @@ public class MainActivity extends Activity {
                 | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
         promptInput.setImeOptions(EditorInfo.IME_FLAG_NO_EXTRACT_UI);
         promptInput.setBackground(makeBg(0xFFFFFFFF, 0xFFCBD5E1, dp(18)));
+        promptInput.setOnTouchListener((v, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_DOWN) {
+                focusPromptInput(true);
+            }
+            return false;
+        });
+        promptInput.setOnFocusChangeListener((v, hasFocus) -> {
+            if (hasFocus && promptInput.isEnabled() && chatPanel.getVisibility() == View.VISIBLE) {
+                promptInput.postDelayed(() -> openKeyboard(promptInput), 40);
+            }
+        });
         LinearLayout.LayoutParams inputLp = new LinearLayout.LayoutParams(0, dp(56), 1);
         inputLp.setMargins(0, 0, dp(8), 0);
         composer.addView(promptInput, inputLp);
+        composer.setOnClickListener(v -> focusPromptInput(true));
 
         attachButton = new Button(this);
         attachButton.setText("+");
@@ -392,8 +415,7 @@ public class MainActivity extends Activity {
     private void sendMessage() {
         String text = promptInput.getText().toString().trim();
         if (text.isEmpty() && selectedImageDataUrl == null) {
-            promptInput.requestFocus();
-            openKeyboard(promptInput);
+            focusPromptInput(true);
             return;
         }
         sendMessageText(text);
@@ -681,6 +703,7 @@ public class MainActivity extends Activity {
         loginPanel.setVisibility(View.VISIBLE);
         chatPanel.setVisibility(View.GONE);
         newChatButton.setVisibility(View.GONE);
+        updateButton.setVisibility(View.VISIBLE);
         logoutButton.setVisibility(View.GONE);
         statusText.setText("请登录");
     }
@@ -689,6 +712,7 @@ public class MainActivity extends Activity {
         loginPanel.setVisibility(View.GONE);
         chatPanel.setVisibility(View.VISIBLE);
         newChatButton.setVisibility(View.VISIBLE);
+        updateButton.setVisibility(View.VISIBLE);
         logoutButton.setVisibility(View.VISIBLE);
         accountText.setText((accountEmail == null || accountEmail.isEmpty() ? "已登录" : accountEmail)
                 + " · 余额 " + String.format("%.4f", credits));
@@ -795,7 +819,7 @@ public class MainActivity extends Activity {
         attachButton.setText("+");
         messageList.removeAllViews();
         addBubble("15code", "新对话已开始。", false);
-        promptInput.requestFocus();
+        focusPromptInput(true);
     }
 
     private void logout() {
@@ -823,6 +847,9 @@ public class MainActivity extends Activity {
         statusText.setText(active ? "正在生成 · " + modelLabel(selectedModel) : "已连接 15code");
         sendButton.setText(active ? "停止" : "发送");
         promptInput.setEnabled(!active);
+        if (!active) {
+            focusPromptInput(false);
+        }
     }
 
     private void stopStreaming() {
@@ -837,8 +864,102 @@ public class MainActivity extends Activity {
     }
 
     private void openKeyboard(View view) {
+        view.requestFocus();
         InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
-        if (imm != null) imm.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT);
+        if (imm != null) {
+            view.post(() -> imm.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT));
+        }
+    }
+
+    private void focusPromptInput(boolean showKeyboard) {
+        if (promptInput == null || !promptInput.isEnabled()) return;
+        promptInput.setFocusableInTouchMode(true);
+        promptInput.setCursorVisible(true);
+        promptInput.requestFocus();
+        promptInput.setSelection(promptInput.getText().length());
+        if (showKeyboard) {
+            promptInput.postDelayed(() -> openKeyboard(promptInput), 40);
+        }
+    }
+
+    private void checkAppUpdate(boolean manual) {
+        if (manual) setBusy(true, "正在检查更新...");
+        new Thread(() -> {
+            try {
+                JSONObject release = getPublicJson(ANDROID_LATEST_RELEASE);
+                String tag = release.optString("tag_name", "");
+                String version = normaliseVersion(tag);
+                String url = release.optString("html_url", ANDROID_RELEASES);
+                boolean hasUpdate = compareVersion(version, APP_VERSION) > 0;
+                runOnUiThread(() -> {
+                    if (manual) setBusy(false, hasUpdate ? "发现新版 " + tag : "当前已是最新版本");
+                    if (hasUpdate) showUpdateDialog(tag, url);
+                    else if (manual) toast("当前已是最新版本");
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    if (manual) {
+                        setBusy(false, "检查更新失败");
+                        toast("无法连接 GitHub，请稍后重试");
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private void showUpdateDialog(String tag, String url) {
+        new AlertDialog.Builder(this)
+                .setTitle("发现新版本 " + tag)
+                .setMessage("可通过 GitHub Releases 下载新版 APK。安装时如提示未知来源，请在系统设置中允许浏览器安装。")
+                .setNegativeButton("稍后", null)
+                .setPositiveButton("打开 GitHub", (d, which) -> openExternal(url == null || url.isEmpty() ? ANDROID_RELEASES : url))
+                .show();
+    }
+
+    private void openExternal(String url) {
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+        } catch (Exception e) {
+            toast("无法打开链接");
+        }
+    }
+
+    private JSONObject getPublicJson(String url) throws Exception {
+        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+        conn.setConnectTimeout(15000);
+        conn.setReadTimeout(15000);
+        conn.setRequestProperty("Accept", "application/vnd.github+json");
+        conn.setRequestProperty("User-Agent", "15code-android/" + APP_VERSION);
+        int code = conn.getResponseCode();
+        String text = readAll(code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream());
+        if (code < 200 || code >= 300) throw new Exception("HTTP " + code + ": " + text);
+        return new JSONObject(text);
+    }
+
+    private String normaliseVersion(String tag) {
+        String value = tag == null ? "" : tag.trim();
+        while (value.startsWith("v") || value.startsWith("V")) value = value.substring(1);
+        return value;
+    }
+
+    private int compareVersion(String a, String b) {
+        String[] left = normaliseVersion(a).split("\\.");
+        String[] right = normaliseVersion(b).split("\\.");
+        int count = Math.max(left.length, right.length);
+        for (int i = 0; i < count; i++) {
+            int l = i < left.length ? parseVersionPart(left[i]) : 0;
+            int r = i < right.length ? parseVersionPart(right[i]) : 0;
+            if (l != r) return l > r ? 1 : -1;
+        }
+        return 0;
+    }
+
+    private int parseVersionPart(String value) {
+        try {
+            return Integer.parseInt(value.replaceAll("[^0-9].*$", ""));
+        } catch (Exception ignored) {
+            return 0;
+        }
     }
 
     private void pickImage() {
