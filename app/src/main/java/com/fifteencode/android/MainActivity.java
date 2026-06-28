@@ -6,6 +6,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -23,6 +24,7 @@ import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.PopupWindow;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -51,7 +53,7 @@ public class MainActivity extends Activity {
     private static final String ANDROID_RELEASES = "https://github.com/zpf000zpf/15code-android/releases";
     private static final String ANDROID_LATEST_RELEASE = "https://api.github.com/repos/zpf000zpf/15code-android/releases/latest";
     private static final String PREFS = "15code_android";
-    private static final String APP_VERSION = "1.3.7";
+    private static final String APP_VERSION = "1.3.8";
     private static final String PREFERRED_MODEL = "qwen3.6";
     private static final int PICK_IMAGE_REQUEST = 7301;
     private static final int MAX_HISTORY_MESSAGES = 20;
@@ -442,11 +444,23 @@ public class MainActivity extends Activity {
     }
 
     private void openComposerDialog() {
+        LinearLayout sheet = new LinearLayout(this);
+        sheet.setOrientation(LinearLayout.VERTICAL);
+        sheet.setPadding(dp(16), dp(14), dp(16), dp(16));
+        sheet.setBackground(makeBg(0xFFFFFFFF, 0xFFE2E8F0, dp(18)));
+
+        TextView title = new TextView(this);
+        title.setText("输入消息");
+        title.setTextColor(0xFF0F172A);
+        title.setTextSize(16);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        sheet.addView(title, new LinearLayout.LayoutParams(-1, dp(30)));
+
         EditText input = new EditText(this);
-        input.setHint("输入消息");
-        input.setContentDescription("chat-composer-dialog-input");
+        input.setHint("发消息给 15code");
+        input.setContentDescription("chat-composer-sheet-input");
         input.setMinLines(3);
-        input.setMaxLines(8);
+        input.setMaxLines(6);
         input.setSingleLine(false);
         input.setInputType(InputType.TYPE_CLASS_TEXT
                 | InputType.TYPE_TEXT_FLAG_MULTI_LINE
@@ -454,30 +468,54 @@ public class MainActivity extends Activity {
         input.setImeOptions(EditorInfo.IME_FLAG_NO_EXTRACT_UI);
         int pad = dp(16);
         input.setPadding(pad, dp(10), pad, dp(10));
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("输入消息")
-                .setView(input)
-                .setNegativeButton("取消", null)
-                .setPositiveButton("发送", null)
-                .create();
-        dialog.setOnShowListener(d -> {
-            if (dialog.getWindow() != null) {
-                dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE
-                        | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        input.setTextColor(0xFF111827);
+        input.setHintTextColor(0xFF94A3B8);
+        input.setTextSize(16);
+        input.setBackground(makeBg(0xFFF8FAFC, 0xFFCBD5E1, dp(14)));
+        sheet.addView(input, new LinearLayout.LayoutParams(-1, dp(132)));
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setGravity(Gravity.CENTER_VERTICAL | Gravity.RIGHT);
+        actions.setPadding(0, dp(12), 0, 0);
+
+        Button cancel = new Button(this);
+        cancel.setText("取消");
+        cancel.setAllCaps(false);
+        cancel.setTextColor(0xFF334155);
+        cancel.setBackground(makeBg(0xFFFFFFFF, 0xFFCBD5E1, dp(14)));
+        actions.addView(cancel, new LinearLayout.LayoutParams(dp(82), dp(48)));
+
+        Button send = new Button(this);
+        send.setText("发送");
+        send.setAllCaps(false);
+        send.setTextColor(0xFFFFFFFF);
+        send.setBackground(makeBg(0xFF2563EB, 0xFF2563EB, dp(14)));
+        LinearLayout.LayoutParams sendLp = new LinearLayout.LayoutParams(dp(92), dp(48));
+        sendLp.setMargins(dp(10), 0, 0, 0);
+        actions.addView(send, sendLp);
+        sheet.addView(actions, new LinearLayout.LayoutParams(-1, dp(60)));
+
+        PopupWindow popup = new PopupWindow(sheet, -1, -2, true);
+        popup.setBackgroundDrawable(new ColorDrawable(0x00000000));
+        popup.setOutsideTouchable(true);
+        popup.setInputMethodMode(PopupWindow.INPUT_METHOD_NEEDED);
+        popup.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+
+        cancel.setOnClickListener(v -> popup.dismiss());
+        send.setOnClickListener(v -> {
+            String text = input.getText().toString().trim();
+            if (text.isEmpty()) {
+                toast("请输入消息");
+                return;
             }
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-                String text = input.getText().toString().trim();
-                if (text.isEmpty()) {
-                    toast("请输入消息");
-                    return;
-                }
-                dialog.dismiss();
-                sendMessageText(text);
-            });
-            input.requestFocus();
-            input.postDelayed(() -> openKeyboard(input), 120);
+            popup.dismiss();
+            sendMessageText(text);
         });
-        dialog.show();
+
+        popup.showAtLocation(root, Gravity.BOTTOM, 0, 0);
+        input.requestFocus();
+        input.postDelayed(() -> openKeyboard(input), 160);
     }
 
     private void sendMessageText(String text) {

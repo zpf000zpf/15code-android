@@ -11,12 +11,12 @@ fail() {
   exit 1
 }
 
-grep -q 'private static final String APP_VERSION = "1.3.7";' "$MAIN" \
-  || fail "APP_VERSION must be 1.3.7"
-grep -q 'versionName "1.3.7"' "$GRADLE" \
-  || fail "Gradle versionName must be 1.3.7"
-grep -q 'versionCode 20' "$GRADLE" \
-  || fail "Gradle versionCode must be 20"
+grep -q 'private static final String APP_VERSION = "1.3.8";' "$MAIN" \
+  || fail "APP_VERSION must be 1.3.8"
+grep -q 'versionName "1.3.8"' "$GRADLE" \
+  || fail "Gradle versionName must be 1.3.8"
+grep -q 'versionCode 21' "$GRADLE" \
+  || fail "Gradle versionCode must be 21"
 
 grep -q 'SEARCH_CHAT = PLATFORM + "/api/search-chat"' "$MAIN" \
   || fail "Android chat must use platform /api/search-chat"
@@ -32,8 +32,12 @@ grep -q 'promptInput.setOnClickListener(v -> openComposerDialog())' "$MAIN" \
   || fail "bottom composer input must open the dialog composer"
 grep -q 'composer.setOnClickListener(v -> openComposerDialog())' "$MAIN" \
   || fail "composer tap must open the dialog composer"
-grep -q 'chat-composer-dialog-input' "$MAIN" \
-  || fail "dialog composer must expose a stable content description"
+grep -q 'PopupWindow popup = new PopupWindow' "$MAIN" \
+  || fail "composer must use a bottom input sheet"
+grep -q 'popup.showAtLocation(root, Gravity.BOTTOM' "$MAIN" \
+  || fail "composer sheet must appear from the bottom"
+grep -q 'chat-composer-sheet-input' "$MAIN" \
+  || fail "bottom sheet composer must expose a stable content description"
 
 grep -q 'ApplicationInfo.FLAG_DEBUGGABLE' "$MAIN" \
   || fail "smoke test gate must use ApplicationInfo.FLAG_DEBUGGABLE"

@@ -20,6 +20,7 @@ accidentally reversed in later releases.
 | v1.3.5 | current | Keeps the first-touch focus path but does not consume the touch event, allowing native EditText click/input handling to continue. |
 | v1.3.6 | current | Keeps the v1.3.5 input fix and makes the smoke-test debug gate independent of generated `BuildConfig`. |
 | v1.3.7 | current | Uses the system dialog composer as the primary Android input path. The bottom composer opens the dialog on one tap instead of relying on inline `EditText` focus. |
+| v1.3.8 | current | Replaces the dialog composer with a bottom input sheet inspired by chat apps: tap the bottom bar, edit in a bottom panel, then send. |
 
 ## Guardrails
 
@@ -34,6 +35,9 @@ accidentally reversed in later releases.
 - If inline input regresses on real devices, keep the dialog composer as the
   primary input path. It uses a system-managed `EditText` and avoids broken
   inline input connections.
+- Prefer a bottom input sheet over `AlertDialog`: it keeps the chat context
+  visible and matches common mobile chat behavior while still avoiding fragile
+  inline composer input connections.
 - Keep keyboard avoidance tied to measured keyboard height:
   `composer.setTranslationY(-keyboardHeight)` and bottom scroll padding of
   `keyboardHeight + 12dp`.
