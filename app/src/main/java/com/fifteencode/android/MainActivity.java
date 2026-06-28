@@ -10,6 +10,8 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.text.InputType;
 import android.util.Base64;
 import android.view.Gravity;
@@ -48,12 +50,14 @@ public class MainActivity extends Activity {
     private static final String ANDROID_RELEASES = "https://github.com/zpf000zpf/15code-android/releases";
     private static final String ANDROID_LATEST_RELEASE = "https://api.github.com/repos/zpf000zpf/15code-android/releases/latest";
     private static final String PREFS = "15code_android";
-    private static final String APP_VERSION = "1.3.0";
+    private static final String APP_VERSION = "1.3.1";
     private static final String PREFERRED_MODEL = "qwen3.6";
     private static final int PICK_IMAGE_REQUEST = 7301;
     private static final int MAX_HISTORY_MESSAGES = 20;
     private static final int MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+    private static final long STREAM_RENDER_INTERVAL_MS = 80;
 
+    private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
     private String sessionToken;
     private String goKey;
@@ -86,6 +90,9 @@ public class MainActivity extends Activity {
     private Button sendButton;
     private ProgressBar progress;
     private ScrollView scroll;
+    private long lastStreamRenderAt;
+    private Runnable pendingStreamRender;
+    private String pendingStreamText = "";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -276,7 +283,8 @@ public class MainActivity extends Activity {
         promptInput.setBackground(makeBg(0xFFFFFFFF, 0xFFCBD5E1, dp(18)));
         promptInput.setOnTouchListener((v, event) -> {
             if (event.getAction() == MotionEvent.ACTION_DOWN) {
-                focusPromptInput(true);
+                promptInput.requestFocus();
+                promptInput.post(() -> openKeyboard(promptInput));
             }
             return false;
         });
@@ -481,6 +489,7 @@ public class MainActivity extends Activity {
 
         TextView assistantBubble = addBubble(modelLabel(selectedModel), "正在思考...", false);
         setStreamingUi(true);
+        resetStreamRenderState();
         new Thread(() -> {
             StringBuilder answer = new StringBuilder();
             JSONObject body = new JSONObject();
@@ -491,8 +500,9 @@ public class MainActivity extends Activity {
                 body.put("messages", buildRequestMessages(text, attachedImage));
                 streamChat(body, chunk -> {
                     answer.append(chunk);
-                    runOnUiThread(() -> updateBubble(assistantBubble, modelLabel(selectedModel), answer.toString()));
+                    queueBubbleUpdate(assistantBubble, modelLabel(selectedModel), answer.toString());
                 });
+                flushBubbleUpdate(assistantBubble, modelLabel(selectedModel), answer.toString());
                 if (answer.length() == 0) throw new Exception("模型返回为空，请换模型重试");
                 JSONObject assistant = new JSONObject();
                 assistant.put("role", "assistant");
@@ -510,10 +520,10 @@ public class MainActivity extends Activity {
                         trimMessages();
                         saveChatHistory();
                     } catch (Exception ignored) {}
-                    runOnUiThread(() -> updateBubble(assistantBubble, modelLabel(selectedModel), answer + "\n\n[已停止]"));
+                    flushBubbleUpdate(assistantBubble, modelLabel(selectedModel), answer + "\n\n[已停止]");
                 } else if (answer.length() == 0 && isRetryableStreamError(e)) {
                     try {
-                        runOnUiThread(() -> updateBubble(assistantBubble, modelLabel(selectedModel), "连接不稳定，正在切换普通模式..."));
+                        flushBubbleUpdate(assistantBubble, modelLabel(selectedModel), "连接不稳定，正在切换普通模式...");
                         body.put("stream", false);
                         String fallback = completeChat(body);
                         if (fallback.isEmpty()) throw new Exception("模型返回为空，请换模型重试");
@@ -523,14 +533,14 @@ public class MainActivity extends Activity {
                         messages.put(assistant);
                         trimMessages();
                         saveChatHistory();
-                        runOnUiThread(() -> updateBubble(assistantBubble, modelLabel(selectedModel), fallback));
+                        flushBubbleUpdate(assistantBubble, modelLabel(selectedModel), fallback);
                     } catch (Exception fallbackError) {
-                        runOnUiThread(() -> updateBubble(assistantBubble, "错误", friendlyError(fallbackError)));
+                        flushBubbleUpdate(assistantBubble, "错误", friendlyError(fallbackError));
                     }
                 } else if (answer.length() == 0) {
-                    runOnUiThread(() -> updateBubble(assistantBubble, "错误", friendlyError(e)));
+                    flushBubbleUpdate(assistantBubble, "错误", friendlyError(e));
                 } else {
-                    runOnUiThread(() -> updateBubble(assistantBubble, modelLabel(selectedModel), answer + "\n\n[连接中断]"));
+                    flushBubbleUpdate(assistantBubble, modelLabel(selectedModel), answer + "\n\n[连接中断]");
                 }
             } finally {
                 activeChatConnection = null;
@@ -807,8 +817,65 @@ public class MainActivity extends Activity {
     }
 
     private void updateBubble(TextView bubble, String who, String text) {
+        boolean shouldFollow = isNearScrollBottom();
         bubble.setText(who + "\n" + text);
-        scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
+        if (shouldFollow) {
+            scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
+        }
+    }
+
+    private boolean isNearScrollBottom() {
+        if (scroll == null || messageList == null) return true;
+        int distance = messageList.getBottom() - (scroll.getScrollY() + scroll.getHeight());
+        return distance < dp(120);
+    }
+
+    private void resetStreamRenderState() {
+        uiHandler.post(() -> {
+            if (pendingStreamRender != null) {
+                uiHandler.removeCallbacks(pendingStreamRender);
+                pendingStreamRender = null;
+            }
+            lastStreamRenderAt = 0;
+            pendingStreamText = "";
+        });
+    }
+
+    private void queueBubbleUpdate(TextView bubble, String who, String text) {
+        uiHandler.post(() -> {
+            pendingStreamText = text;
+            long now = System.currentTimeMillis();
+            long elapsed = now - lastStreamRenderAt;
+            if (elapsed >= STREAM_RENDER_INTERVAL_MS) {
+                if (pendingStreamRender != null) {
+                    uiHandler.removeCallbacks(pendingStreamRender);
+                    pendingStreamRender = null;
+                }
+                lastStreamRenderAt = now;
+                updateBubble(bubble, who, text);
+                return;
+            }
+            if (pendingStreamRender != null) return;
+            long delay = STREAM_RENDER_INTERVAL_MS - elapsed;
+            pendingStreamRender = () -> {
+                pendingStreamRender = null;
+                lastStreamRenderAt = System.currentTimeMillis();
+                updateBubble(bubble, who, pendingStreamText);
+            };
+            uiHandler.postDelayed(pendingStreamRender, delay);
+        });
+    }
+
+    private void flushBubbleUpdate(TextView bubble, String who, String text) {
+        uiHandler.post(() -> {
+            if (pendingStreamRender != null) {
+                uiHandler.removeCallbacks(pendingStreamRender);
+                pendingStreamRender = null;
+            }
+            lastStreamRenderAt = System.currentTimeMillis();
+            pendingStreamText = text;
+            updateBubble(bubble, who, text);
+        });
     }
 
     private void newChat() {
