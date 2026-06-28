@@ -1,0 +1,19 @@
+name: Android Regression Checks
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+    paths:
+      - "app/**"
+      - "docs/android-regression-notes.md"
+      - "scripts/check_android_regressions.sh"
+      - ".github/workflows/android-regression.yml"
+
+jobs:
+  static-regressions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Android regressions
+        run: bash scripts/check_android_regressions.sh
