@@ -15,7 +15,6 @@ import android.os.Looper;
 import android.text.InputType;
 import android.util.Base64;
 import android.view.Gravity;
-import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
@@ -50,7 +49,7 @@ public class MainActivity extends Activity {
     private static final String ANDROID_RELEASES = "https://github.com/zpf000zpf/15code-android/releases";
     private static final String ANDROID_LATEST_RELEASE = "https://api.github.com/repos/zpf000zpf/15code-android/releases/latest";
     private static final String PREFS = "15code_android";
-    private static final String APP_VERSION = "1.3.2";
+    private static final String APP_VERSION = "1.3.3";
     private static final String PREFERRED_MODEL = "qwen3.6";
     private static final int PICK_IMAGE_REQUEST = 7301;
     private static final int MAX_HISTORY_MESSAGES = 20;
@@ -281,25 +280,9 @@ public class MainActivity extends Activity {
                 | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
         promptInput.setImeOptions(EditorInfo.IME_FLAG_NO_EXTRACT_UI);
         promptInput.setBackground(makeBg(0xFFFFFFFF, 0xFFCBD5E1, dp(18)));
-        promptInput.setOnTouchListener((v, event) -> {
-            if (event.getAction() == MotionEvent.ACTION_DOWN) {
-                promptInput.setEnabled(true);
-                promptInput.setFocusableInTouchMode(true);
-                promptInput.setCursorVisible(true);
-                promptInput.requestFocusFromTouch();
-                promptInput.postDelayed(() -> openKeyboard(promptInput), 40);
-            }
-            return false;
-        });
-        promptInput.setOnFocusChangeListener((v, hasFocus) -> {
-            if (hasFocus && promptInput.isEnabled() && chatPanel.getVisibility() == View.VISIBLE) {
-                promptInput.postDelayed(() -> openKeyboard(promptInput), 40);
-            }
-        });
         LinearLayout.LayoutParams inputLp = new LinearLayout.LayoutParams(0, dp(56), 1);
         inputLp.setMargins(0, 0, dp(8), 0);
         composer.addView(promptInput, inputLp);
-        composer.setOnClickListener(v -> focusPromptInput(true));
 
         attachButton = new Button(this);
         attachButton.setText("+");
@@ -916,12 +899,7 @@ public class MainActivity extends Activity {
         progress.setVisibility(active ? View.VISIBLE : View.GONE);
         statusText.setText(active ? "正在生成 · " + modelLabel(selectedModel) : "已连接 15code");
         sendButton.setText(active ? "停止" : "发送");
-        promptInput.setEnabled(true);
-        promptInput.setFocusableInTouchMode(true);
-        promptInput.setCursorVisible(true);
-        if (!active) {
-            focusPromptInput(false);
-        }
+        promptInput.setEnabled(!active);
     }
 
     private void stopStreaming() {
@@ -936,22 +914,16 @@ public class MainActivity extends Activity {
     }
 
     private void openKeyboard(View view) {
-        view.requestFocus();
         InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
-        if (imm != null) {
-            view.post(() -> imm.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT));
-        }
+        if (imm != null) imm.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT);
     }
 
     private void focusPromptInput(boolean showKeyboard) {
-        if (promptInput == null) return;
-        promptInput.setEnabled(true);
-        promptInput.setFocusableInTouchMode(true);
-        promptInput.setCursorVisible(true);
+        if (promptInput == null || !promptInput.isEnabled()) return;
         promptInput.requestFocus();
         promptInput.setSelection(promptInput.getText().length());
         if (showKeyboard) {
-            promptInput.postDelayed(() -> openKeyboard(promptInput), 40);
+            openKeyboard(promptInput);
         }
     }
 
@@ -1065,8 +1037,8 @@ public class MainActivity extends Activity {
             int fullHeight = root.getRootView().getHeight();
             int hidden = fullHeight - visible.bottom;
             int keyboardHeight = hidden > dp(140) ? hidden : 0;
-            composer.setTranslationY(0);
-            scroll.setPadding(0, 0, 0, keyboardHeight == 0 ? 0 : dp(12));
+            composer.setTranslationY(-keyboardHeight);
+            scroll.setPadding(0, 0, 0, keyboardHeight == 0 ? 0 : keyboardHeight + dp(12));
             if (keyboardHeight > 0 && promptInput.hasFocus()) {
                 scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
             }
