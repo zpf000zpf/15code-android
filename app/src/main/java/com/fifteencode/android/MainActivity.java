@@ -51,7 +51,7 @@ public class MainActivity extends Activity {
     private static final String ANDROID_RELEASES = "https://github.com/zpf000zpf/15code-android/releases";
     private static final String ANDROID_LATEST_RELEASE = "https://api.github.com/repos/zpf000zpf/15code-android/releases/latest";
     private static final String PREFS = "15code_android";
-    private static final String APP_VERSION = "1.3.4";
+    private static final String APP_VERSION = "1.3.5";
     private static final String PREFERRED_MODEL = "qwen3.6";
     private static final int PICK_IMAGE_REQUEST = 7301;
     private static final int MAX_HISTORY_MESSAGES = 20;
@@ -104,8 +104,12 @@ public class MainActivity extends Activity {
         goKey = prefs.getString("goKey", null);
         selectedModel = prefs.getString("model", null);
         buildUi();
-        if (sessionToken != null) restoreSession();
-        root.postDelayed(() -> checkAppUpdate(false), 1800);
+        if (BuildConfig.DEBUG && getIntent().getBooleanExtra("smokeComposer", false)) {
+            showSmokeComposer();
+        } else {
+            if (sessionToken != null) restoreSession();
+            root.postDelayed(() -> checkAppUpdate(false), 1800);
+        }
     }
 
     @Override
@@ -266,6 +270,7 @@ public class MainActivity extends Activity {
 
         promptInput = new EditText(this);
         promptInput.setHint("发消息给 15code");
+        promptInput.setContentDescription("chat-composer-input");
         promptInput.setTextColor(0xFF111827);
         promptInput.setHintTextColor(0xFF94A3B8);
         promptInput.setTextSize(16);
@@ -286,7 +291,6 @@ public class MainActivity extends Activity {
             if (event.getAction() == MotionEvent.ACTION_DOWN && !promptInput.hasFocus()) {
                 promptInput.requestFocusFromTouch();
                 promptInput.postDelayed(() -> openKeyboard(promptInput), 40);
-                return true;
             }
             return false;
         });
@@ -317,6 +321,19 @@ public class MainActivity extends Activity {
         });
         composer.addView(sendButton, new LinearLayout.LayoutParams(dp(76), dp(56)));
         installKeyboardAvoidance();
+    }
+
+    private void showSmokeComposer() {
+        sessionToken = "smoke";
+        goKey = "smoke";
+        selectedModel = PREFERRED_MODEL;
+        accountEmail = "smoke-test";
+        credits = 0;
+        models.clear();
+        models.add(new Model(PREFERRED_MODEL, PREFERRED_MODEL));
+        setBusy(false, "Smoke test");
+        showChat();
+        root.postDelayed(() -> focusPromptInput(true), 400);
     }
 
     private void login() {
