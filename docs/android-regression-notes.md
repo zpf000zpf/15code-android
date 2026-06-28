@@ -18,6 +18,7 @@ accidentally reversed in later releases.
 | v1.3.3 | current | Restores the stable approach: native EditText input behavior from v1.2.9 plus keyboard avoidance from v1.2.6. |
 | v1.3.4 | current | Adds a narrowly scoped first-touch focus path, computes keyboard avoidance from screen visible bounds, slows stream rendering to reading speed, and routes chat through `/api/search-chat` for desktop-equivalent web search. |
 | v1.3.5 | current | Keeps the first-touch focus path but does not consume the touch event, allowing native EditText click/input handling to continue. |
+| v1.3.6 | current | Keeps the v1.3.5 input fix and makes the smoke-test debug gate independent of generated `BuildConfig`. |
 
 ## Guardrails
 

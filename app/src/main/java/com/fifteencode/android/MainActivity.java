@@ -5,6 +5,7 @@ import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.ApplicationInfo;
 import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -51,7 +52,7 @@ public class MainActivity extends Activity {
     private static final String ANDROID_RELEASES = "https://github.com/zpf000zpf/15code-android/releases";
     private static final String ANDROID_LATEST_RELEASE = "https://api.github.com/repos/zpf000zpf/15code-android/releases/latest";
     private static final String PREFS = "15code_android";
-    private static final String APP_VERSION = "1.3.5";
+    private static final String APP_VERSION = "1.3.6";
     private static final String PREFERRED_MODEL = "qwen3.6";
     private static final int PICK_IMAGE_REQUEST = 7301;
     private static final int MAX_HISTORY_MESSAGES = 20;
@@ -104,7 +105,7 @@ public class MainActivity extends Activity {
         goKey = prefs.getString("goKey", null);
         selectedModel = prefs.getString("model", null);
         buildUi();
-        if (BuildConfig.DEBUG && getIntent().getBooleanExtra("smokeComposer", false)) {
+        if (isDebugBuild() && getIntent().getBooleanExtra("smokeComposer", false)) {
             showSmokeComposer();
         } else {
             if (sessionToken != null) restoreSession();
@@ -334,6 +335,10 @@ public class MainActivity extends Activity {
         setBusy(false, "Smoke test");
         showChat();
         root.postDelayed(() -> focusPromptInput(true), 400);
+    }
+
+    private boolean isDebugBuild() {
+        return (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
     }
 
     private void login() {
