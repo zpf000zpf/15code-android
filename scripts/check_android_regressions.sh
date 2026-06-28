@@ -11,12 +11,18 @@ fail() {
   exit 1
 }
 
-grep -q 'private static final String APP_VERSION = "1.3.8";' "$MAIN" \
-  || fail "APP_VERSION must be 1.3.8"
-grep -q 'versionName "1.3.8"' "$GRADLE" \
-  || fail "Gradle versionName must be 1.3.8"
-grep -q 'versionCode 21' "$GRADLE" \
-  || fail "Gradle versionCode must be 21"
+grep -q 'private static final String APP_VERSION = "1.3.9";' "$MAIN" \
+  || fail "APP_VERSION must be 1.3.9"
+grep -q 'versionName "1.3.9"' "$GRADLE" \
+  || fail "Gradle versionName must be 1.3.9"
+grep -q 'versionCode 22' "$GRADLE" \
+  || fail "Gradle versionCode must be 22"
+grep -q 'signingConfigs' "$GRADLE" \
+  || fail "stable debug signing config is required"
+grep -q '15code-debug.keystore' "$GRADLE" \
+  || fail "debug build must use the stable 15code debug keystore"
+[ -f "$ROOT/app/signing/15code-debug.keystore" ] \
+  || fail "stable debug keystore file is missing"
 
 grep -q 'SEARCH_CHAT = PLATFORM + "/api/search-chat"' "$MAIN" \
   || fail "Android chat must use platform /api/search-chat"
