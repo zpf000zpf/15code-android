@@ -15,6 +15,7 @@ import android.os.Looper;
 import android.text.InputType;
 import android.util.Base64;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
@@ -46,15 +47,16 @@ import java.util.List;
 public class MainActivity extends Activity {
     private static final String PLATFORM = "https://15code.com";
     private static final String LLM = "https://cli.15code.com/v1/chat/completions";
+    private static final String SEARCH_CHAT = PLATFORM + "/api/search-chat";
     private static final String ANDROID_RELEASES = "https://github.com/zpf000zpf/15code-android/releases";
     private static final String ANDROID_LATEST_RELEASE = "https://api.github.com/repos/zpf000zpf/15code-android/releases/latest";
     private static final String PREFS = "15code_android";
-    private static final String APP_VERSION = "1.3.3";
+    private static final String APP_VERSION = "1.3.4";
     private static final String PREFERRED_MODEL = "qwen3.6";
     private static final int PICK_IMAGE_REQUEST = 7301;
     private static final int MAX_HISTORY_MESSAGES = 20;
     private static final int MAX_IMAGE_BYTES = 4 * 1024 * 1024;
-    private static final long STREAM_RENDER_INTERVAL_MS = 80;
+    private static final long STREAM_RENDER_INTERVAL_MS = 180;
 
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
@@ -280,9 +282,19 @@ public class MainActivity extends Activity {
                 | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
         promptInput.setImeOptions(EditorInfo.IME_FLAG_NO_EXTRACT_UI);
         promptInput.setBackground(makeBg(0xFFFFFFFF, 0xFFCBD5E1, dp(18)));
+        promptInput.setOnTouchListener((v, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_DOWN && !promptInput.hasFocus()) {
+                promptInput.requestFocusFromTouch();
+                promptInput.postDelayed(() -> openKeyboard(promptInput), 40);
+                return true;
+            }
+            return false;
+        });
+        promptInput.setOnClickListener(v -> focusPromptInput(true));
         LinearLayout.LayoutParams inputLp = new LinearLayout.LayoutParams(0, dp(56), 1);
         inputLp.setMargins(0, 0, dp(8), 0);
         composer.addView(promptInput, inputLp);
+        composer.setOnClickListener(v -> focusPromptInput(true));
 
         attachButton = new Button(this);
         attachButton.setText("+");
@@ -482,6 +494,7 @@ public class MainActivity extends Activity {
             try {
                 body.put("model", selectedModel);
                 body.put("stream", true);
+                body.put("searchMode", "auto");
                 body.put("max_tokens", 4096);
                 body.put("messages", buildRequestMessages(text, attachedImage));
                 streamChat(body, chunk -> {
@@ -572,14 +585,14 @@ public class MainActivity extends Activity {
     }
 
     private void streamChat(JSONObject body, StreamHandler handler) throws Exception {
-        HttpURLConnection conn = (HttpURLConnection) new URL(LLM).openConnection();
+        HttpURLConnection conn = (HttpURLConnection) new URL(SEARCH_CHAT).openConnection();
         activeChatConnection = conn;
         conn.setConnectTimeout(20000);
         conn.setReadTimeout(600000);
         conn.setRequestMethod("POST");
         conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
         conn.setRequestProperty("Accept", "text/event-stream");
-        conn.setRequestProperty("Authorization", "Bearer " + goKey);
+        conn.setRequestProperty("Authorization", "Bearer " + sessionToken);
         conn.setRequestProperty("User-Agent", "15code-android-native/" + APP_VERSION);
         conn.setDoOutput(true);
         byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
@@ -593,36 +606,56 @@ public class MainActivity extends Activity {
         }
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
             String line;
+            String event = "";
+            String data = "";
             while ((line = reader.readLine()) != null) {
                 if (!streaming) throw new Exception("用户已停止生成");
-                line = line.trim();
-                if (!line.startsWith("data:")) continue;
-                String data = line.substring(5).trim();
-                if (data.isEmpty()) continue;
-                if ("[DONE]".equals(data)) break;
-                JSONObject obj = new JSONObject(data);
-                JSONObject choice = obj.optJSONArray("choices") == null ? null : obj.optJSONArray("choices").optJSONObject(0);
-                if (choice == null) continue;
-                JSONObject delta = choice.optJSONObject("delta");
-                String chunk = "";
-                if (delta != null) chunk = delta.optString("content", "");
-                if (chunk.isEmpty()) {
-                    JSONObject message = choice.optJSONObject("message");
-                    if (message != null) chunk = message.optString("content", "");
+                if (line.trim().isEmpty()) {
+                    if (!data.isEmpty()) {
+                        if ("meta".equals(event)) {
+                            JSONObject meta = new JSONObject(data);
+                            if (meta.optBoolean("searched")) {
+                                runOnUiThread(() -> statusText.setText("已搜索最新信息，正在生成..."));
+                            } else if (!meta.optString("searchError", "").isEmpty()) {
+                                String err = meta.optString("searchError");
+                                runOnUiThread(() -> statusText.setText("检索跳过 · " + err));
+                            }
+                        } else if ("error".equals(event)) {
+                            JSONObject err = new JSONObject(data);
+                            throw new Exception(err.optString("error", data));
+                        } else {
+                            if ("[DONE]".equals(data)) break;
+                            JSONObject obj = new JSONObject(data);
+                            JSONObject choice = obj.optJSONArray("choices") == null ? null : obj.optJSONArray("choices").optJSONObject(0);
+                            if (choice != null) {
+                                JSONObject delta = choice.optJSONObject("delta");
+                                String chunk = "";
+                                if (delta != null) chunk = delta.optString("content", "");
+                                if (chunk.isEmpty()) {
+                                    JSONObject message = choice.optJSONObject("message");
+                                    if (message != null) chunk = message.optString("content", "");
+                                }
+                                if (!chunk.isEmpty()) handler.onChunk(chunk);
+                            }
+                        }
+                    }
+                    event = "";
+                    data = "";
+                    continue;
                 }
-                if (!chunk.isEmpty()) handler.onChunk(chunk);
+                if (line.startsWith("event:")) {
+                    event = line.substring(6).trim();
+                } else if (line.startsWith("data:")) {
+                    String part = line.substring(5).trim();
+                    data = data.isEmpty() ? part : data + "\n" + part;
+                }
             }
         }
     }
 
     private String completeChat(JSONObject body) throws Exception {
-        JSONObject resp = postJson(LLM, body, goKey, false);
-        JSONArray choices = resp.optJSONArray("choices");
-        if (choices == null || choices.length() == 0) return "";
-        JSONObject choice = choices.optJSONObject(0);
-        if (choice == null) return "";
-        JSONObject message = choice.optJSONObject("message");
-        return message == null ? "" : message.optString("content", "");
+        JSONObject resp = postJson(SEARCH_CHAT, body, sessionToken, false);
+        return resp.optString("content", "");
     }
 
     private boolean isRetryableStreamError(Exception e) {
@@ -1033,11 +1066,12 @@ public class MainActivity extends Activity {
     private void installKeyboardAvoidance() {
         root.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
             Rect visible = new Rect();
-            root.getWindowVisibleDisplayFrame(visible);
-            int fullHeight = root.getRootView().getHeight();
+            getWindow().getDecorView().getWindowVisibleDisplayFrame(visible);
+            int fullHeight = getResources().getDisplayMetrics().heightPixels;
             int hidden = fullHeight - visible.bottom;
             int keyboardHeight = hidden > dp(140) ? hidden : 0;
             composer.setTranslationY(-keyboardHeight);
+            composer.bringToFront();
             scroll.setPadding(0, 0, 0, keyboardHeight == 0 ? 0 : keyboardHeight + dp(12));
             if (keyboardHeight > 0 && promptInput.hasFocus()) {
                 scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));

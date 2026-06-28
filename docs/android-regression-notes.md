@@ -16,13 +16,16 @@ accidentally reversed in later releases.
 | v1.3.1 | 6f3b031 | Streaming rendering was throttled, but touch/focus handling changed again. Input regressions reappeared. |
 | v1.3.2 | a334cc9 | Attempted to force focus recovery, but still kept explicit touch/focus behavior and did not restore keyboard avoidance. |
 | v1.3.3 | current | Restores the stable approach: native EditText input behavior from v1.2.9 plus keyboard avoidance from v1.2.6. |
+| v1.3.4 | current | Adds a narrowly scoped first-touch focus path, computes keyboard avoidance from screen visible bounds, slows stream rendering to reading speed, and routes chat through `/api/search-chat` for desktop-equivalent web search. |
 
 ## Guardrails
 
-- Do not add `setOnTouchListener` or `setOnFocusChangeListener` to `promptInput`
-  unless tested on a real Android device with first-tap input and Chinese IME.
-- Do not force `openKeyboard()` from touch events. Native `EditText` should own
-  its tap-to-type behavior.
+- Do not add broad `setOnFocusChangeListener` loops to `promptInput`.
+- If first-tap handling is needed, keep it limited to `ACTION_DOWN` when the
+  input does not already have focus. Do not keep forcing focus while the user is
+  editing.
+- Do not repeatedly force `openKeyboard()` from focus changes. Native `EditText`
+  should own normal tap-to-type behavior after the first focus.
 - Keep keyboard avoidance tied to measured keyboard height:
   `composer.setTranslationY(-keyboardHeight)` and bottom scroll padding of
   `keyboardHeight + 12dp`.
