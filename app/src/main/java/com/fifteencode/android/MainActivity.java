@@ -50,7 +50,7 @@ public class MainActivity extends Activity {
     private static final String ANDROID_RELEASES = "https://github.com/zpf000zpf/15code-android/releases";
     private static final String ANDROID_LATEST_RELEASE = "https://api.github.com/repos/zpf000zpf/15code-android/releases/latest";
     private static final String PREFS = "15code_android";
-    private static final String APP_VERSION = "1.3.1";
+    private static final String APP_VERSION = "1.3.2";
     private static final String PREFERRED_MODEL = "qwen3.6";
     private static final int PICK_IMAGE_REQUEST = 7301;
     private static final int MAX_HISTORY_MESSAGES = 20;
@@ -283,8 +283,11 @@ public class MainActivity extends Activity {
         promptInput.setBackground(makeBg(0xFFFFFFFF, 0xFFCBD5E1, dp(18)));
         promptInput.setOnTouchListener((v, event) -> {
             if (event.getAction() == MotionEvent.ACTION_DOWN) {
-                promptInput.requestFocus();
-                promptInput.post(() -> openKeyboard(promptInput));
+                promptInput.setEnabled(true);
+                promptInput.setFocusableInTouchMode(true);
+                promptInput.setCursorVisible(true);
+                promptInput.requestFocusFromTouch();
+                promptInput.postDelayed(() -> openKeyboard(promptInput), 40);
             }
             return false;
         });
@@ -913,7 +916,9 @@ public class MainActivity extends Activity {
         progress.setVisibility(active ? View.VISIBLE : View.GONE);
         statusText.setText(active ? "正在生成 · " + modelLabel(selectedModel) : "已连接 15code");
         sendButton.setText(active ? "停止" : "发送");
-        promptInput.setEnabled(!active);
+        promptInput.setEnabled(true);
+        promptInput.setFocusableInTouchMode(true);
+        promptInput.setCursorVisible(true);
         if (!active) {
             focusPromptInput(false);
         }
@@ -939,7 +944,8 @@ public class MainActivity extends Activity {
     }
 
     private void focusPromptInput(boolean showKeyboard) {
-        if (promptInput == null || !promptInput.isEnabled()) return;
+        if (promptInput == null) return;
+        promptInput.setEnabled(true);
         promptInput.setFocusableInTouchMode(true);
         promptInput.setCursorVisible(true);
         promptInput.requestFocus();
