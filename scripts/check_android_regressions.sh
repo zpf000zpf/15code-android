@@ -11,12 +11,12 @@ fail() {
   exit 1
 }
 
-grep -q 'private static final String APP_VERSION = "1.3.6";' "$MAIN" \
-  || fail "APP_VERSION must be 1.3.6"
-grep -q 'versionName "1.3.6"' "$GRADLE" \
-  || fail "Gradle versionName must be 1.3.6"
-grep -q 'versionCode 19' "$GRADLE" \
-  || fail "Gradle versionCode must be 19"
+grep -q 'private static final String APP_VERSION = "1.3.7";' "$MAIN" \
+  || fail "APP_VERSION must be 1.3.7"
+grep -q 'versionName "1.3.7"' "$GRADLE" \
+  || fail "Gradle versionName must be 1.3.7"
+grep -q 'versionCode 20' "$GRADLE" \
+  || fail "Gradle versionCode must be 20"
 
 grep -q 'SEARCH_CHAT = PLATFORM + "/api/search-chat"' "$MAIN" \
   || fail "Android chat must use platform /api/search-chat"
@@ -28,13 +28,12 @@ grep -q 'Authorization", "Bearer " + sessionToken' "$MAIN" \
 grep -q 'STREAM_RENDER_INTERVAL_MS = 180' "$MAIN" \
   || fail "stream rendering interval must stay paced for readability"
 
-grep -q 'promptInput.setOnTouchListener' "$MAIN" \
-  || fail "first-touch focus path is missing"
-if awk '/promptInput\.setOnTouchListener/,/^\s*\}\);/' "$MAIN" | grep -q 'return true'; then
-  fail "promptInput touch listener must not consume touch events"
-fi
-grep -q 'requestFocusFromTouch' "$MAIN" \
-  || fail "first touch should request touch focus"
+grep -q 'promptInput.setOnClickListener(v -> openComposerDialog())' "$MAIN" \
+  || fail "bottom composer input must open the dialog composer"
+grep -q 'composer.setOnClickListener(v -> openComposerDialog())' "$MAIN" \
+  || fail "composer tap must open the dialog composer"
+grep -q 'chat-composer-dialog-input' "$MAIN" \
+  || fail "dialog composer must expose a stable content description"
 
 grep -q 'ApplicationInfo.FLAG_DEBUGGABLE' "$MAIN" \
   || fail "smoke test gate must use ApplicationInfo.FLAG_DEBUGGABLE"

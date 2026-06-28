@@ -16,7 +16,6 @@ import android.os.Looper;
 import android.text.InputType;
 import android.util.Base64;
 import android.view.Gravity;
-import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
@@ -52,7 +51,7 @@ public class MainActivity extends Activity {
     private static final String ANDROID_RELEASES = "https://github.com/zpf000zpf/15code-android/releases";
     private static final String ANDROID_LATEST_RELEASE = "https://api.github.com/repos/zpf000zpf/15code-android/releases/latest";
     private static final String PREFS = "15code_android";
-    private static final String APP_VERSION = "1.3.6";
+    private static final String APP_VERSION = "1.3.7";
     private static final String PREFERRED_MODEL = "qwen3.6";
     private static final int PICK_IMAGE_REQUEST = 7301;
     private static final int MAX_HISTORY_MESSAGES = 20;
@@ -280,26 +279,19 @@ public class MainActivity extends Activity {
         promptInput.setSingleLine(false);
         promptInput.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
         promptInput.setPadding(dp(14), 0, dp(14), 0);
-        promptInput.setFocusable(true);
-        promptInput.setFocusableInTouchMode(true);
-        promptInput.setCursorVisible(true);
+        promptInput.setFocusable(false);
+        promptInput.setFocusableInTouchMode(false);
+        promptInput.setCursorVisible(false);
         promptInput.setInputType(InputType.TYPE_CLASS_TEXT
                 | InputType.TYPE_TEXT_FLAG_MULTI_LINE
                 | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
         promptInput.setImeOptions(EditorInfo.IME_FLAG_NO_EXTRACT_UI);
         promptInput.setBackground(makeBg(0xFFFFFFFF, 0xFFCBD5E1, dp(18)));
-        promptInput.setOnTouchListener((v, event) -> {
-            if (event.getAction() == MotionEvent.ACTION_DOWN && !promptInput.hasFocus()) {
-                promptInput.requestFocusFromTouch();
-                promptInput.postDelayed(() -> openKeyboard(promptInput), 40);
-            }
-            return false;
-        });
-        promptInput.setOnClickListener(v -> focusPromptInput(true));
+        promptInput.setOnClickListener(v -> openComposerDialog());
         LinearLayout.LayoutParams inputLp = new LinearLayout.LayoutParams(0, dp(56), 1);
         inputLp.setMargins(0, 0, dp(8), 0);
         composer.addView(promptInput, inputLp);
-        composer.setOnClickListener(v -> focusPromptInput(true));
+        composer.setOnClickListener(v -> openComposerDialog());
 
         attachButton = new Button(this);
         attachButton.setText("+");
@@ -443,7 +435,7 @@ public class MainActivity extends Activity {
     private void sendMessage() {
         String text = promptInput.getText().toString().trim();
         if (text.isEmpty() && selectedImageDataUrl == null) {
-            focusPromptInput(true);
+            openComposerDialog();
             return;
         }
         sendMessageText(text);
@@ -452,6 +444,7 @@ public class MainActivity extends Activity {
     private void openComposerDialog() {
         EditText input = new EditText(this);
         input.setHint("输入消息");
+        input.setContentDescription("chat-composer-dialog-input");
         input.setMinLines(3);
         input.setMaxLines(8);
         input.setSingleLine(false);
@@ -927,7 +920,7 @@ public class MainActivity extends Activity {
         attachButton.setText("+");
         messageList.removeAllViews();
         addBubble("15code", "新对话已开始。", false);
-        focusPromptInput(true);
+        promptInput.setText("");
     }
 
     private void logout() {

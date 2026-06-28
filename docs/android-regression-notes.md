@@ -19,6 +19,7 @@ accidentally reversed in later releases.
 | v1.3.4 | current | Adds a narrowly scoped first-touch focus path, computes keyboard avoidance from screen visible bounds, slows stream rendering to reading speed, and routes chat through `/api/search-chat` for desktop-equivalent web search. |
 | v1.3.5 | current | Keeps the first-touch focus path but does not consume the touch event, allowing native EditText click/input handling to continue. |
 | v1.3.6 | current | Keeps the v1.3.5 input fix and makes the smoke-test debug gate independent of generated `BuildConfig`. |
+| v1.3.7 | current | Uses the system dialog composer as the primary Android input path. The bottom composer opens the dialog on one tap instead of relying on inline `EditText` focus. |
 
 ## Guardrails
 
@@ -30,6 +31,9 @@ accidentally reversed in later releases.
   the rest of the touch sequence and creates a normal input connection.
 - Do not repeatedly force `openKeyboard()` from focus changes. Native `EditText`
   should own normal tap-to-type behavior after the first focus.
+- If inline input regresses on real devices, keep the dialog composer as the
+  primary input path. It uses a system-managed `EditText` and avoids broken
+  inline input connections.
 - Keep keyboard avoidance tied to measured keyboard height:
   `composer.setTranslationY(-keyboardHeight)` and bottom scroll padding of
   `keyboardHeight + 12dp`.
