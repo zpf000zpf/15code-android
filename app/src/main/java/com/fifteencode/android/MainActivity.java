@@ -53,7 +53,7 @@ public class MainActivity extends Activity {
     private static final String ANDROID_RELEASES = "https://github.com/zpf000zpf/15code-android/releases";
     private static final String ANDROID_LATEST_RELEASE = "https://api.github.com/repos/zpf000zpf/15code-android/releases/latest";
     private static final String PREFS = "15code_android";
-    private static final String APP_VERSION = "1.3.9";
+    private static final String APP_VERSION = "1.3.10";
     private static final String PREFERRED_MODEL = "qwen3.6";
     private static final int PICK_IMAGE_REQUEST = 7301;
     private static final int MAX_HISTORY_MESSAGES = 20;
@@ -68,6 +68,7 @@ public class MainActivity extends Activity {
     private String accountEmail;
     private String selectedImageDataUrl;
     private String selectedImageName;
+    private boolean forceWebSearch;
     private double credits;
     private volatile boolean streaming;
     private volatile boolean stopRequested;
@@ -89,6 +90,7 @@ public class MainActivity extends Activity {
     private Button newChatButton;
     private Button updateButton;
     private Button logoutButton;
+    private Button searchButton;
     private Button attachButton;
     private Button sendButton;
     private ProgressBar progress;
@@ -294,6 +296,19 @@ public class MainActivity extends Activity {
         inputLp.setMargins(0, 0, dp(8), 0);
         composer.addView(promptInput, inputLp);
         composer.setOnClickListener(v -> openComposerDialog());
+
+        searchButton = new Button(this);
+        searchButton.setText("联网");
+        searchButton.setAllCaps(false);
+        searchButton.setTextSize(13);
+        searchButton.setOnClickListener(v -> {
+            forceWebSearch = !forceWebSearch;
+            updateSearchButton();
+        });
+        LinearLayout.LayoutParams searchLp = new LinearLayout.LayoutParams(dp(58), dp(56));
+        searchLp.setMargins(0, 0, dp(8), 0);
+        composer.addView(searchButton, searchLp);
+        updateSearchButton();
 
         attachButton = new Button(this);
         attachButton.setText("+");
@@ -547,7 +562,11 @@ public class MainActivity extends Activity {
             try {
                 body.put("model", selectedModel);
                 body.put("stream", true);
-                body.put("searchMode", "auto");
+                if (forceWebSearch) {
+                    body.put("webSearch", true);
+                } else {
+                    body.put("searchMode", "auto");
+                }
                 body.put("max_tokens", 4096);
                 body.put("messages", buildRequestMessages(text, attachedImage));
                 streamChat(body, chunk -> {
@@ -866,6 +885,17 @@ public class MainActivity extends Activity {
         String label = modelLabel(selectedModel);
         modelButton.setText(label + "\n" + selectedModel);
         statusText.setText("当前模型 · " + label);
+    }
+
+    private void updateSearchButton() {
+        if (searchButton == null) return;
+        searchButton.setText(forceWebSearch ? "联网开" : "联网");
+        searchButton.setTextColor(forceWebSearch ? 0xFFFFFFFF : 0xFF0F172A);
+        searchButton.setBackground(makeBg(
+                forceWebSearch ? 0xFF059669 : 0xFFFFFFFF,
+                forceWebSearch ? 0xFF059669 : 0xFFCBD5E1,
+                dp(18)));
+        statusText.setText(forceWebSearch ? "联网检索已开启" : "自动检索");
     }
 
     private String modelLabel(String id) {
