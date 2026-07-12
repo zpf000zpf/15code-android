@@ -11,12 +11,12 @@ fail() {
   exit 1
 }
 
-grep -q 'private static final String APP_VERSION = "1.3.10";' "$MAIN" \
-  || fail "APP_VERSION must be 1.3.10"
-grep -q 'versionName "1.3.10"' "$GRADLE" \
-  || fail "Gradle versionName must be 1.3.10"
-grep -q 'versionCode 23' "$GRADLE" \
-  || fail "Gradle versionCode must be 23"
+grep -q 'private static final String APP_VERSION = "1.3.11";' "$MAIN" \
+  || fail "APP_VERSION must be 1.3.11"
+grep -q 'versionName "1.3.11"' "$GRADLE" \
+  || fail "Gradle versionName must be 1.3.11"
+grep -q 'versionCode 24' "$GRADLE" \
+  || fail "Gradle versionCode must be 24"
 grep -q 'signingConfigs' "$GRADLE" \
   || fail "stable debug signing config is required"
 grep -q '15code-debug.keystore' "$GRADLE" \
@@ -33,6 +33,8 @@ grep -q 'Authorization", "Bearer " + sessionToken' "$MAIN" \
 
 grep -q 'STREAM_RENDER_INTERVAL_MS = 180' "$MAIN" \
   || fail "stream rendering interval must stay paced for readability"
+grep -q 'messageList.getHeight() - scroll.getHeight()' "$MAIN" \
+  || fail "streaming chat must scroll using measured content height"
 
 grep -q 'promptInput.setOnClickListener(v -> openComposerDialog())' "$MAIN" \
   || fail "bottom composer input must open the dialog composer"

@@ -22,6 +22,8 @@ accidentally reversed in later releases.
 | v1.3.7 | current | Uses the system dialog composer as the primary Android input path. The bottom composer opens the dialog on one tap instead of relying on inline `EditText` focus. |
 | v1.3.8 | current | Replaces the dialog composer with a bottom input sheet inspired by chat apps: tap the bottom bar, edit in a bottom panel, then send. |
 | v1.3.9 | current | Adds a stable debug signing key so future GitHub debug APKs can be installed over the previous app without uninstalling, preserving SharedPreferences chat history. |
+| v1.3.10 | current | Adds the visible web-search toggle while retaining automatic search mode. |
+| v1.3.11 | current | Fixes streaming chat scrolling by using the measured message content height instead of focus-based `fullScroll`, so long answers remain viewable before generation finishes. |
 
 ## Guardrails
 
@@ -46,3 +48,6 @@ accidentally reversed in later releases.
   `keyboardHeight + 12dp`.
 - If streaming needs to prevent a second send, use the send button state. Avoid
   changing input focus behavior as part of streaming rendering fixes.
+- During streaming, scroll to the measured message-list height after layout.
+  Do not restore focus-based `fullScroll`, which can stop at the first screen
+  while a selectable response bubble is still growing.
