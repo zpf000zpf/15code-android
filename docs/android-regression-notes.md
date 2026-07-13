@@ -24,6 +24,7 @@ accidentally reversed in later releases.
 | v1.3.9 | current | Adds a stable debug signing key so future GitHub debug APKs can be installed over the previous app without uninstalling, preserving SharedPreferences chat history. |
 | v1.3.10 | current | Adds the visible web-search toggle while retaining automatic search mode. |
 | v1.3.11 | current | Fixes streaming chat scrolling by using the measured message content height instead of focus-based `fullScroll`, so long answers remain viewable before generation finishes. |
+| v1.3.12 | current | Reduces the streaming render interval from 180 ms to 100 ms so visible output follows the model more closely without returning to per-token screen churn. |
 
 ## Guardrails
 

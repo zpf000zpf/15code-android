@@ -53,12 +53,12 @@ public class MainActivity extends Activity {
     private static final String ANDROID_RELEASES = "https://github.com/zpf000zpf/15code-android/releases";
     private static final String ANDROID_LATEST_RELEASE = "https://api.github.com/repos/zpf000zpf/15code-android/releases/latest";
     private static final String PREFS = "15code_android";
-    private static final String APP_VERSION = "1.3.11";
+    private static final String APP_VERSION = "1.3.12";
     private static final String PREFERRED_MODEL = "qwen3.6";
     private static final int PICK_IMAGE_REQUEST = 7301;
     private static final int MAX_HISTORY_MESSAGES = 20;
     private static final int MAX_IMAGE_BYTES = 4 * 1024 * 1024;
-    private static final long STREAM_RENDER_INTERVAL_MS = 180;
+    private static final long STREAM_RENDER_INTERVAL_MS = 100;
 
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
