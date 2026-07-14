@@ -53,7 +53,7 @@ public class MainActivity extends Activity {
     private static final String ANDROID_RELEASES = "https://github.com/zpf000zpf/15code-android/releases";
     private static final String ANDROID_LATEST_RELEASE = "https://api.github.com/repos/zpf000zpf/15code-android/releases/latest";
     private static final String PREFS = "15code_android";
-    private static final String APP_VERSION = "1.3.12";
+    private static final String APP_VERSION = "1.3.13";
     private static final String PREFERRED_MODEL = "qwen3.6";
     private static final int PICK_IMAGE_REQUEST = 7301;
     private static final int MAX_HISTORY_MESSAGES = 20;
@@ -130,7 +130,10 @@ public class MainActivity extends Activity {
             selectedImageDataUrl = "data:" + mime + ";base64," + Base64.encodeToString(bytes, Base64.NO_WRAP);
             selectedImageName = "图片";
             attachButton.setText("图");
-            statusText.setText("已附加图片，需选择支持视觉的模型");
+            boolean switched = selectVisionModelForImage();
+            statusText.setText(switched
+                    ? "已附加图片 · 已切换到 " + modelLabel(selectedModel)
+                    : "已附加图片 · 当前模型 " + modelLabel(selectedModel));
         } catch (Exception e) {
             selectedImageDataUrl = null;
             selectedImageName = null;
@@ -885,6 +888,19 @@ public class MainActivity extends Activity {
         String label = modelLabel(selectedModel);
         modelButton.setText(label + "\n" + selectedModel);
         statusText.setText("当前模型 · " + label);
+    }
+
+    private boolean selectVisionModelForImage() {
+        if (!"qwen3.6".equals(selectedModel)) return false;
+        for (Model model : models) {
+            if ("gpt-5.6-terra".equals(model.id)) {
+                selectedModel = model.id;
+                prefs.edit().putString("model", selectedModel).apply();
+                updateModelButton();
+                return true;
+            }
+        }
+        return false;
     }
 
     private void updateSearchButton() {
