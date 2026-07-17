@@ -53,7 +53,7 @@ public class MainActivity extends Activity {
     private static final String ANDROID_RELEASES = "https://github.com/zpf000zpf/15code-android/releases";
     private static final String ANDROID_LATEST_RELEASE = "https://api.github.com/repos/zpf000zpf/15code-android/releases/latest";
     private static final String PREFS = "15code_android";
-    private static final String APP_VERSION = "1.3.13";
+    private static final String APP_VERSION = "1.3.14";
     private static final String PREFERRED_MODEL = "qwen3.6";
     private static final int PICK_IMAGE_REQUEST = 7301;
     private static final int MAX_HISTORY_MESSAGES = 20;
@@ -107,6 +107,11 @@ public class MainActivity extends Activity {
         sessionToken = prefs.getString("sessionToken", null);
         goKey = prefs.getString("goKey", null);
         selectedModel = prefs.getString("model", null);
+        accountEmail = prefs.getString("accountEmail", "");
+        try { credits = Double.parseDouble(prefs.getString("creditsUsd", "0")); }
+        catch (Exception ignored) { credits = 0; }
+        loadCachedModels();
+        if (selectedModel == null || selectedModel.isEmpty()) selectedModel = PREFERRED_MODEL;
         buildUi();
         if (isDebugBuild() && getIntent().getBooleanExtra("smokeComposer", false)) {
             showSmokeComposer();
@@ -385,7 +390,8 @@ public class MainActivity extends Activity {
     }
 
     private void restoreSession() {
-        setBusy(true, "正在恢复会话...");
+        showChat();
+        setBusy(true, "正在后台同步账户...");
         new Thread(() -> {
             try {
                 bootstrapAccount();
@@ -394,13 +400,19 @@ public class MainActivity extends Activity {
                     showChat();
                 });
             } catch (Exception e) {
-                prefs.edit().clear().apply();
-                sessionToken = null;
-                goKey = null;
-                runOnUiThread(() -> {
-                    setBusy(false, "请重新登录");
-                    showLogin();
-                });
+                String message = e.getMessage() == null ? "" : e.getMessage();
+                boolean authExpired = message.contains("HTTP 401") || message.contains("HTTP 403");
+                if (authExpired) {
+                    prefs.edit().remove("sessionToken").remove("goKey").apply();
+                    sessionToken = null;
+                    goKey = null;
+                    runOnUiThread(() -> {
+                        setBusy(false, "登录已失效，请重新登录");
+                        showLogin();
+                    });
+                } else {
+                    runOnUiThread(() -> setBusy(false, "离线显示 · 后台同步失败"));
+                }
             }
         }).start();
     }
@@ -410,6 +422,10 @@ public class MainActivity extends Activity {
         JSONObject user = me.optJSONObject("user");
         accountEmail = user == null ? "" : user.optString("email", "");
         credits = user == null ? 0 : user.optDouble("credits", 0) / 1_000_000d;
+        prefs.edit()
+                .putString("accountEmail", accountEmail)
+                .putString("creditsUsd", String.valueOf(credits))
+                .apply();
         JSONArray tokens = getJson(PLATFORM + "/api/tokens", sessionToken).optJSONArray("tokens");
         goKey = "";
         if (tokens != null) {
@@ -441,6 +457,7 @@ public class MainActivity extends Activity {
             }
         }
         if (models.isEmpty()) throw new Exception("未加载到可用模型");
+        saveCachedModels();
         if (selectedModel == null || selectedModel.isEmpty()) {
             selectedModel = models.get(0).id;
             for (Model model : models) {
@@ -450,6 +467,35 @@ public class MainActivity extends Activity {
                 }
             }
         }
+    }
+
+    private void loadCachedModels() {
+        String raw = prefs.getString("cachedModels", "");
+        if (raw == null || raw.isEmpty()) return;
+        try {
+            JSONArray saved = new JSONArray(raw);
+            for (int i = 0; i < saved.length(); i++) {
+                JSONObject row = saved.optJSONObject(i);
+                if (row == null) continue;
+                String id = row.optString("id", "");
+                if (!id.isEmpty()) models.add(new Model(id, row.optString("name", id)));
+            }
+        } catch (Exception ignored) {
+            models.clear();
+        }
+    }
+
+    private void saveCachedModels() {
+        JSONArray saved = new JSONArray();
+        try {
+            for (Model model : models) {
+                JSONObject row = new JSONObject();
+                row.put("id", model.id);
+                row.put("name", model.name);
+                saved.put(row);
+            }
+            prefs.edit().putString("cachedModels", saved.toString()).apply();
+        } catch (Exception ignored) {}
     }
 
     private void sendMessage() {

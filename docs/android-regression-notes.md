@@ -26,6 +26,7 @@ accidentally reversed in later releases.
 | v1.3.11 | current | Fixes streaming chat scrolling by using the measured message content height instead of focus-based `fullScroll`, so long answers remain viewable before generation finishes. |
 | v1.3.12 | current | Reduces the streaming render interval from 180 ms to 100 ms so visible output follows the model more closely without returning to per-token screen churn. |
 | v1.3.13 | current | Preserves multimodal image content through the platform and automatically switches image requests from text-only Qwen3.6 to GPT-5.6 Terra. |
+| v1.3.14 | current | Opens cached chat immediately while account data refreshes in the background, and preserves local history on temporary network failures. |
 
 ## Guardrails
 

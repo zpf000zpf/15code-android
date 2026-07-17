@@ -11,12 +11,12 @@ fail() {
   exit 1
 }
 
-grep -q 'private static final String APP_VERSION = "1.3.13";' "$MAIN" \
-  || fail "APP_VERSION must be 1.3.13"
-grep -q 'versionName "1.3.13"' "$GRADLE" \
-  || fail "Gradle versionName must be 1.3.13"
-grep -q 'versionCode 26' "$GRADLE" \
-  || fail "Gradle versionCode must be 26"
+grep -q 'private static final String APP_VERSION = "1.3.14";' "$MAIN" \
+  || fail "APP_VERSION must be 1.3.14"
+grep -q 'versionName "1.3.14"' "$GRADLE" \
+  || fail "Gradle versionName must be 1.3.14"
+grep -q 'versionCode 27' "$GRADLE" \
+  || fail "Gradle versionCode must be 27"
 grep -q 'signingConfigs' "$GRADLE" \
   || fail "stable debug signing config is required"
 grep -q '15code-debug.keystore' "$GRADLE" \
@@ -37,6 +37,10 @@ grep -q 'messageList.getHeight() - scroll.getHeight()' "$MAIN" \
   || fail "streaming chat must scroll using measured content height"
 grep -q 'selectVisionModelForImage()' "$MAIN" \
   || fail "image attachments must switch away from the text-only default model"
+grep -q '正在后台同步账户' "$MAIN" \
+  || fail "saved sessions must open chat before background account refresh"
+grep -q 'remove("sessionToken").remove("goKey")' "$MAIN" \
+  || fail "session expiry must not clear local chat history"
 
 grep -q 'promptInput.setOnClickListener(v -> openComposerDialog())' "$MAIN" \
   || fail "bottom composer input must open the dialog composer"
