@@ -6,6 +6,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
+import android.graphics.BitmapFactory;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.Rect;
 import android.graphics.Typeface;
@@ -23,7 +24,9 @@ import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.PopupMenu;
 import android.widget.PopupWindow;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
@@ -53,7 +56,7 @@ public class MainActivity extends Activity {
     private static final String ANDROID_RELEASES = "https://github.com/zpf000zpf/15code-android/releases";
     private static final String ANDROID_LATEST_RELEASE = "https://api.github.com/repos/zpf000zpf/15code-android/releases/latest";
     private static final String PREFS = "15code_android";
-    private static final String APP_VERSION = "1.3.14";
+    private static final String APP_VERSION = "1.4.0";
     private static final String PREFERRED_MODEL = "qwen3.6";
     private static final int PICK_IMAGE_REQUEST = 7301;
     private static final int MAX_HISTORY_MESSAGES = 20;
@@ -88,11 +91,12 @@ public class MainActivity extends Activity {
     private TextView statusText;
     private TextView accountText;
     private Button newChatButton;
-    private Button updateButton;
-    private Button logoutButton;
+    private Button menuButton;
     private Button searchButton;
     private Button attachButton;
     private Button sendButton;
+    private LinearLayout attachmentPreview;
+    private ImageView attachmentImage;
     private ProgressBar progress;
     private ScrollView scroll;
     private long lastStreamRenderAt;
@@ -134,7 +138,7 @@ public class MainActivity extends Activity {
             byte[] bytes = readLimitedBytes(uri, MAX_IMAGE_BYTES);
             selectedImageDataUrl = "data:" + mime + ";base64," + Base64.encodeToString(bytes, Base64.NO_WRAP);
             selectedImageName = "图片";
-            attachButton.setText("图");
+            updateAttachmentPreview();
             boolean switched = selectVisionModelForImage();
             statusText.setText(switched
                     ? "已附加图片 · 已切换到 " + modelLabel(selectedModel)
@@ -142,7 +146,7 @@ public class MainActivity extends Activity {
         } catch (Exception e) {
             selectedImageDataUrl = null;
             selectedImageName = null;
-            attachButton.setText("+");
+            updateAttachmentPreview();
             toast(e.getMessage());
         }
     }
@@ -169,22 +173,20 @@ public class MainActivity extends Activity {
         header.addView(title, new LinearLayout.LayoutParams(0, -1, 1));
 
         newChatButton = new Button(this);
-        newChatButton.setText("新对话");
+        newChatButton.setText("＋");
         newChatButton.setAllCaps(false);
+        newChatButton.setTextSize(22);
+        newChatButton.setContentDescription("新建对话");
         newChatButton.setOnClickListener(v -> newChat());
-        header.addView(newChatButton, new LinearLayout.LayoutParams(dp(88), dp(42)));
+        header.addView(newChatButton, new LinearLayout.LayoutParams(dp(52), dp(42)));
 
-        updateButton = new Button(this);
-        updateButton.setText("更新");
-        updateButton.setAllCaps(false);
-        updateButton.setOnClickListener(v -> checkAppUpdate(true));
-        header.addView(updateButton, new LinearLayout.LayoutParams(dp(68), dp(42)));
-
-        logoutButton = new Button(this);
-        logoutButton.setText("退出");
-        logoutButton.setAllCaps(false);
-        logoutButton.setOnClickListener(v -> logout());
-        header.addView(logoutButton, new LinearLayout.LayoutParams(dp(68), dp(42)));
+        menuButton = new Button(this);
+        menuButton.setText("⋮");
+        menuButton.setAllCaps(false);
+        menuButton.setTextSize(22);
+        menuButton.setContentDescription("更多操作");
+        menuButton.setOnClickListener(this::showHeaderMenu);
+        header.addView(menuButton, new LinearLayout.LayoutParams(dp(52), dp(42)));
 
         progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progress.setVisibility(View.GONE);
@@ -252,27 +254,60 @@ public class MainActivity extends Activity {
         chatPanel.setPadding(dp(12), dp(8), dp(12), dp(8));
         root.addView(chatPanel, new LinearLayout.LayoutParams(-1, 0, 1));
 
+        LinearLayout accountRow = new LinearLayout(this);
+        accountRow.setOrientation(LinearLayout.HORIZONTAL);
+        accountRow.setGravity(Gravity.CENTER_VERTICAL);
+        accountRow.setPadding(dp(4), 0, dp(4), dp(6));
+        chatPanel.addView(accountRow, new LinearLayout.LayoutParams(-1, dp(58)));
+
         accountText = new TextView(this);
         accountText.setTextColor(0xFF475569);
         accountText.setTextSize(13);
-        accountText.setPadding(dp(4), 0, dp(4), dp(6));
-        chatPanel.addView(accountText, new LinearLayout.LayoutParams(-1, dp(34)));
+        accountText.setGravity(Gravity.CENTER_VERTICAL);
+        accountRow.addView(accountText, new LinearLayout.LayoutParams(0, -1, 1));
 
         modelButton = new Button(this);
         modelButton.setText("选择模型");
         modelButton.setAllCaps(false);
-        modelButton.setGravity(Gravity.CENTER_VERTICAL);
+        modelButton.setGravity(Gravity.CENTER);
         modelButton.setPadding(dp(12), 0, dp(12), 0);
         modelButton.setTextColor(0xFF0F172A);
         modelButton.setBackground(makeBg(0xFFFFFFFF, 0xFFE2E8F0, dp(12)));
         modelButton.setOnClickListener(v -> showModelPicker());
-        chatPanel.addView(modelButton, new LinearLayout.LayoutParams(-1, dp(48)));
+        accountRow.addView(modelButton, new LinearLayout.LayoutParams(dp(190), dp(46)));
 
         scroll = new ScrollView(this);
         messageList = new LinearLayout(this);
         messageList.setOrientation(LinearLayout.VERTICAL);
         scroll.addView(messageList, new ScrollView.LayoutParams(-1, -2));
         chatPanel.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        attachmentPreview = new LinearLayout(this);
+        attachmentPreview.setOrientation(LinearLayout.HORIZONTAL);
+        attachmentPreview.setGravity(Gravity.CENTER_VERTICAL);
+        attachmentPreview.setPadding(dp(8), dp(6), dp(8), dp(6));
+        attachmentPreview.setBackground(makeBg(0xFFFFFFFF, 0xFFBFDBFE, dp(14)));
+        attachmentPreview.setVisibility(View.GONE);
+
+        attachmentImage = new ImageView(this);
+        attachmentImage.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        attachmentPreview.addView(attachmentImage, new LinearLayout.LayoutParams(dp(52), dp(52)));
+
+        TextView attachmentLabel = new TextView(this);
+        attachmentLabel.setText("图片已附加 · 将使用视觉模型");
+        attachmentLabel.setTextColor(0xFF334155);
+        attachmentLabel.setTextSize(13);
+        attachmentLabel.setPadding(dp(10), 0, dp(8), 0);
+        attachmentPreview.addView(attachmentLabel, new LinearLayout.LayoutParams(0, -1, 1));
+
+        Button removeAttachment = new Button(this);
+        removeAttachment.setText("移除");
+        removeAttachment.setAllCaps(false);
+        removeAttachment.setOnClickListener(v -> clearSelectedImage());
+        attachmentPreview.addView(removeAttachment, new LinearLayout.LayoutParams(dp(72), dp(44)));
+        LinearLayout.LayoutParams previewLp = new LinearLayout.LayoutParams(-1, dp(66));
+        previewLp.setMargins(0, dp(6), 0, 0);
+        chatPanel.addView(attachmentPreview, previewLp);
 
         composer = new LinearLayout(this);
         composer.setOrientation(LinearLayout.HORIZONTAL);
@@ -339,6 +374,45 @@ public class MainActivity extends Activity {
         });
         composer.addView(sendButton, new LinearLayout.LayoutParams(dp(76), dp(56)));
         installKeyboardAvoidance();
+    }
+
+    private void showHeaderMenu(View anchor) {
+        PopupMenu menu = new PopupMenu(this, anchor);
+        menu.getMenu().add("检查更新");
+        if (sessionToken != null) menu.getMenu().add("退出登录");
+        menu.setOnMenuItemClickListener(item -> {
+            if ("检查更新".contentEquals(item.getTitle())) checkAppUpdate(true);
+            else if ("退出登录".contentEquals(item.getTitle())) logout();
+            return true;
+        });
+        menu.show();
+    }
+
+    private void updateAttachmentPreview() {
+        if (attachmentPreview == null) return;
+        if (selectedImageDataUrl == null || selectedImageDataUrl.isEmpty()) {
+            attachmentPreview.setVisibility(View.GONE);
+            if (attachmentImage != null) attachmentImage.setImageDrawable(null);
+            if (attachButton != null) attachButton.setText("＋");
+            return;
+        }
+        try {
+            int comma = selectedImageDataUrl.indexOf(',');
+            String encoded = comma >= 0 ? selectedImageDataUrl.substring(comma + 1) : selectedImageDataUrl;
+            byte[] bytes = Base64.decode(encoded, Base64.DEFAULT);
+            attachmentImage.setImageBitmap(BitmapFactory.decodeByteArray(bytes, 0, bytes.length));
+        } catch (Exception ignored) {
+            attachmentImage.setImageDrawable(null);
+        }
+        attachmentPreview.setVisibility(View.VISIBLE);
+        attachButton.setText("图");
+    }
+
+    private void clearSelectedImage() {
+        selectedImageDataUrl = null;
+        selectedImageName = null;
+        updateAttachmentPreview();
+        statusText.setText("已移除图片");
     }
 
     private void showSmokeComposer() {
@@ -569,7 +643,7 @@ public class MainActivity extends Activity {
         cancel.setOnClickListener(v -> popup.dismiss());
         send.setOnClickListener(v -> {
             String text = input.getText().toString().trim();
-            if (text.isEmpty()) {
+            if (text.isEmpty() && selectedImageDataUrl == null) {
                 toast("请输入消息");
                 return;
             }
@@ -588,7 +662,7 @@ public class MainActivity extends Activity {
         String imageName = selectedImageName;
         selectedImageDataUrl = null;
         selectedImageName = null;
-        attachButton.setText("+");
+        updateAttachmentPreview();
 
         String displayText = text.isEmpty() ? "[图片]" : text;
         if (attachedImage != null) displayText += "\n[已附加图片]";
@@ -853,8 +927,7 @@ public class MainActivity extends Activity {
         loginPanel.setVisibility(View.VISIBLE);
         chatPanel.setVisibility(View.GONE);
         newChatButton.setVisibility(View.GONE);
-        updateButton.setVisibility(View.VISIBLE);
-        logoutButton.setVisibility(View.GONE);
+        menuButton.setVisibility(View.VISIBLE);
         statusText.setText("请登录");
     }
 
@@ -862,8 +935,7 @@ public class MainActivity extends Activity {
         loginPanel.setVisibility(View.GONE);
         chatPanel.setVisibility(View.VISIBLE);
         newChatButton.setVisibility(View.VISIBLE);
-        updateButton.setVisibility(View.VISIBLE);
-        logoutButton.setVisibility(View.VISIBLE);
+        menuButton.setVisibility(View.VISIBLE);
         accountText.setText((accountEmail == null || accountEmail.isEmpty() ? "已登录" : accountEmail)
                 + " · 余额 " + String.format("%.4f", credits));
         updateModelButton();
@@ -969,6 +1041,7 @@ public class MainActivity extends Activity {
         TextView bubble = new TextView(this);
         updateBubble(bubble, who, text);
         bubble.setTextSize(15);
+        bubble.setLineSpacing(0, 1.18f);
         bubble.setTextColor(mine ? 0xFFFFFFFF : 0xFF111827);
         bubble.setPadding(dp(12), dp(10), dp(12), dp(10));
         bubble.setTextIsSelectable(true);
@@ -1056,7 +1129,7 @@ public class MainActivity extends Activity {
         prefs.edit().remove("chatHistory").apply();
         selectedImageDataUrl = null;
         selectedImageName = null;
-        attachButton.setText("+");
+        updateAttachmentPreview();
         messageList.removeAllViews();
         addBubble("15code", "新对话已开始。", false);
         promptInput.setText("");

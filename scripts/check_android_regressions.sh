@@ -11,12 +11,12 @@ fail() {
   exit 1
 }
 
-grep -q 'private static final String APP_VERSION = "1.3.14";' "$MAIN" \
-  || fail "APP_VERSION must be 1.3.14"
-grep -q 'versionName "1.3.14"' "$GRADLE" \
-  || fail "Gradle versionName must be 1.3.14"
-grep -q 'versionCode 27' "$GRADLE" \
-  || fail "Gradle versionCode must be 27"
+grep -q 'private static final String APP_VERSION = "1.4.0";' "$MAIN" \
+  || fail "APP_VERSION must be 1.4.0"
+grep -q 'versionName "1.4.0"' "$GRADLE" \
+  || fail "Gradle versionName must be 1.4.0"
+grep -q 'versionCode 28' "$GRADLE" \
+  || fail "Gradle versionCode must be 28"
 grep -q 'signingConfigs' "$GRADLE" \
   || fail "stable debug signing config is required"
 grep -q '15code-debug.keystore' "$GRADLE" \
@@ -41,6 +41,10 @@ grep -q '正在后台同步账户' "$MAIN" \
   || fail "saved sessions must open chat before background account refresh"
 grep -q 'remove("sessionToken").remove("goKey")' "$MAIN" \
   || fail "session expiry must not clear local chat history"
+grep -q 'PopupMenu menu = new PopupMenu' "$MAIN" \
+  || fail "header actions must use the compact overflow menu"
+grep -q 'attachmentPreview.setVisibility(View.VISIBLE)' "$MAIN" \
+  || fail "image attachments must show a visible preview"
 
 grep -q 'promptInput.setOnClickListener(v -> openComposerDialog())' "$MAIN" \
   || fail "bottom composer input must open the dialog composer"
