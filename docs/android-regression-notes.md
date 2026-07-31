@@ -27,7 +27,8 @@ accidentally reversed in later releases.
 | v1.3.12 | current | Reduces the streaming render interval from 180 ms to 100 ms so visible output follows the model more closely without returning to per-token screen churn. |
 | v1.3.13 | current | Preserves multimodal image content through the platform and automatically switches image requests from text-only Qwen3.6 to GPT-5.6 Terra. |
 | v1.3.14 | current | Opens cached chat immediately while account data refreshes in the background, and preserves local history on temporary network failures. |
-| v1.4.0 | current | Simplifies the header, moves secondary actions into an overflow menu, combines account/model controls, and adds a removable image preview. |
+| v1.4.1 | current | Introduces the mandatory production Release signature and retains the v1.4.0 interface behavior. Existing debug-signed installs require uninstall/reinstall migration. |
+| v1.4.0 | previous | Simplifies the header, moves secondary actions into an overflow menu, combines account/model controls, and adds a removable image preview. |
 
 ## Guardrails
 

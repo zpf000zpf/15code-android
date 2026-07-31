@@ -1,6 +1,6 @@
 # 15code Android
 
-Android client for 15code. Version 1.4.0 is a native chat app that signs in with a 15code account, loads available models, and streams replies from the same 15code API platform used by the desktop app.
+Android client for 15code. Version 1.4.1 is a native chat app that signs in with a 15code account, loads available models, and streams replies from the same 15code API platform used by the desktop app.
 
 ## Features
 
