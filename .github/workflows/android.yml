@@ -25,17 +25,37 @@ jobs:
         with:
           gradle-version: "8.10.2"
 
-      - name: Build debug APK
-        run: gradle assembleDebug
+      - name: Restore release signing key
+        env:
+          ANDROID_SIGNING_KEY_BASE64: ${{ secrets.ANDROID_SIGNING_KEY_BASE64 }}
+          ANDROID_SIGNING_SECRET_BASE64: ${{ secrets.ANDROID_SIGNING_SECRET_BASE64 }}
+        run: |
+          test -n "$ANDROID_SIGNING_KEY_BASE64"
+          test -n "$ANDROID_SIGNING_SECRET_BASE64"
+          printf '%s' "$ANDROID_SIGNING_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/15code-release.jks"
+          printf '%s' "$ANDROID_SIGNING_SECRET_BASE64" | base64 --decode > "$RUNNER_TEMP/15code-release.secret"
+          chmod 600 "$RUNNER_TEMP/15code-release.jks" "$RUNNER_TEMP/15code-release.secret"
 
-      - name: Build release artifacts
-        run: gradle assembleRelease bundleRelease
+      - name: Build signed release artifacts
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/15code-release.jks
+          ANDROID_KEY_ALIAS: 15code-release
+        run: |
+          export ANDROID_KEYSTORE_PASSWORD="$(openssl dgst -sha256 "$RUNNER_TEMP/15code-release.secret" | awk '{print $2}')"
+          export ANDROID_KEY_PASSWORD="$(openssl dgst -sha512 "$RUNNER_TEMP/15code-release.secret" | awk '{print substr($2, 1, 64)}')"
+          gradle assembleDebug assembleRelease bundleRelease
+
+      - name: Verify release signature
+        run: |
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          test -x "$APKSIGNER"
+          "$APKSIGNER" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk
 
       - name: Collect artifacts
         run: |
           mkdir -p dist
           cp app/build/outputs/apk/debug/app-debug.apk dist/15code-android-debug.apk
-          cp app/build/outputs/apk/release/app-release-unsigned.apk dist/15code-android-release-unsigned.apk
+          cp app/build/outputs/apk/release/app-release.apk dist/15code-android-release.apk
           cp app/build/outputs/bundle/release/app-release.aab dist/15code-android-release.aab
 
       - uses: actions/upload-artifact@v4
@@ -49,4 +69,3 @@ jobs:
         with:
           files: dist/*
           token: ${{ secrets.GITHUB_TOKEN }}
-

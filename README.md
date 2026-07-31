@@ -1,6 +1,6 @@
 # 15code Android
 
-Android client for 15code. Version 1.2.9 is a native chat app that signs in with a 15code account, loads available models, and streams replies from the same 15code API platform used by the desktop app.
+Android client for 15code. Version 1.4.0 is a native chat app that signs in with a 15code account, loads available models, and streams replies from the same 15code API platform used by the desktop app.
 
 ## Features
 
@@ -22,14 +22,14 @@ Android client for 15code. Version 1.2.9 is a native chat app that signs in with
 This project is intended to build on GitHub Actions or a machine with Android SDK installed.
 
 ```bash
-./gradlew assembleDebug
-./gradlew bundleRelease
+gradle assembleDebug
+scripts/build_signed_release.sh
 ```
 
-The release build uses the default unsigned Android artifact unless signing secrets are added to the workflow later.
+Release builds are mandatory-signed. The private release keystore and its secret seed are ignored by Git and must be backed up securely. See `docs/release-signing.md`.
 
 ## Release Flow
 
 1. Commit changes.
 2. Push a tag like `v1.1.0`.
-3. GitHub Actions builds Android artifacts and attaches them to the release.
+3. GitHub Actions restores the signing material from repository secrets, builds signed APK/AAB artifacts, verifies the APK certificate, and attaches the artifacts to the release.

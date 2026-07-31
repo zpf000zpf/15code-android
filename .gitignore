@@ -6,4 +6,6 @@ local.properties
 *.iml
 *.jks
 *.keystore
+*.secret
+keystore.properties
 !app/signing/15code-debug.keystore

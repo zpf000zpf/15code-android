@@ -2,6 +2,13 @@ plugins {
     id "com.android.application"
 }
 
+def releaseStorePath = System.getenv("ANDROID_KEYSTORE_PATH") ?: project.findProperty("ANDROID_KEYSTORE_PATH")
+def releaseStorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: project.findProperty("ANDROID_KEYSTORE_PASSWORD")
+def releaseKeyAlias = System.getenv("ANDROID_KEY_ALIAS") ?: project.findProperty("ANDROID_KEY_ALIAS")
+def releaseKeyPassword = System.getenv("ANDROID_KEY_PASSWORD") ?: project.findProperty("ANDROID_KEY_PASSWORD")
+def releaseSigningConfigured = [releaseStorePath, releaseStorePassword, releaseKeyAlias, releaseKeyPassword]
+        .every { it != null && !it.toString().trim().isEmpty() }
+
 android {
     namespace "com.fifteencode.android"
     compileSdk 35
@@ -12,6 +19,18 @@ android {
             storePassword "15code-debug-store"
             keyAlias "15code-debug"
             keyPassword "15code-debug-store"
+        }
+        if (releaseSigningConfigured) {
+            release {
+                storeFile rootProject.file(releaseStorePath)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+                enableV1Signing true
+                enableV2Signing true
+                enableV3Signing true
+                enableV4Signing true
+            }
         }
     }
 
@@ -27,5 +46,22 @@ android {
         debug {
             signingConfig signingConfigs.debugStable
         }
+        release {
+            if (releaseSigningConfigured) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+}
+
+gradle.taskGraph.whenReady { graph ->
+    def releaseRequested = graph.allTasks.any { task ->
+        task.name == "assembleRelease" || task.name == "bundleRelease"
+    }
+    if (releaseRequested && !releaseSigningConfigured) {
+        throw new GradleException(
+                "Release signing is required. Set ANDROID_KEYSTORE_PATH, " +
+                        "ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD."
+        )
     }
 }
