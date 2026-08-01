@@ -25,6 +25,21 @@ jobs:
         with:
           gradle-version: "8.10.2"
 
+      - name: Catalog and source regression gate
+        shell: bash
+        run: |
+          bash scripts/check_android_regressions.sh
+          node - <<'NODE'
+          (async () => {
+            const response = await fetch('https://15code.com/api/catalog');
+            if (!response.ok) throw new Error(`Catalog HTTP ${response.status}`);
+            const catalog = await response.json();
+            if (catalog.schemaVersion !== 1 || !catalog.releases?.android?.stable?.minimumSupportedVersion) {
+              throw new Error('Catalog release policy is incomplete');
+            }
+          })();
+          NODE
+
       - name: Restore release signing key
         env:
           ANDROID_SIGNING_KEY_BASE64: ${{ secrets.ANDROID_SIGNING_KEY_BASE64 }}
@@ -52,11 +67,14 @@ jobs:
           "$APKSIGNER" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk
 
       - name: Collect artifacts
+        shell: bash
         run: |
+          VERSION=$(sed -n 's/.*versionName "\([^"]*\)".*/\1/p' app/build.gradle)
           mkdir -p dist
-          cp app/build/outputs/apk/debug/app-debug.apk dist/15code-android-debug.apk
-          cp app/build/outputs/apk/release/app-release.apk dist/15code-android-release.apk
-          cp app/build/outputs/bundle/release/app-release.aab dist/15code-android-release.aab
+          cp app/build/outputs/apk/debug/app-debug.apk "dist/15code-android-v${VERSION}-debug.apk"
+          cp app/build/outputs/apk/release/app-release.apk "dist/15code-android-v${VERSION}-release.apk"
+          cp app/build/outputs/bundle/release/app-release.aab "dist/15code-android-v${VERSION}-release.aab"
+          sha256sum dist/* > "dist/15code-android-v${VERSION}.sha256"
 
       - uses: actions/upload-artifact@v4
         with:

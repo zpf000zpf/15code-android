@@ -48,15 +48,20 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity {
     private static final String PLATFORM = "https://15code.com";
+    private static final String CATALOG = PLATFORM + "/api/catalog";
     private static final String LLM = "https://cli.15code.com/v1/chat/completions";
     private static final String SEARCH_CHAT = PLATFORM + "/api/search-chat";
     private static final String ANDROID_RELEASES = "https://github.com/zpf000zpf/15code-android/releases";
     private static final String ANDROID_LATEST_RELEASE = "https://api.github.com/repos/zpf000zpf/15code-android/releases/latest";
     private static final String PREFS = "15code_android";
-    private static final String APP_VERSION = "1.4.1";
+    private static final String APP_VERSION = "1.4.2";
+    private static final int SUPPORTED_CATALOG_SCHEMA_VERSION = 1;
     private static final String PREFERRED_MODEL = "qwen3.6";
     private static final int PICK_IMAGE_REQUEST = 7301;
     private static final int MAX_HISTORY_MESSAGES = 20;
@@ -65,6 +70,12 @@ public class MainActivity extends Activity {
 
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
+    private SecurePreferences securePrefs;
+    private ChatDao chatDao;
+    private final ExecutorService storageExecutor = Executors.newSingleThreadExecutor();
+    private String currentConversationId;
+    private String currentDraft = "";
+    private volatile boolean historyLoadStarted;
     private String sessionToken;
     private String goKey;
     private String selectedModel;
@@ -76,6 +87,11 @@ public class MainActivity extends Activity {
     private volatile boolean streaming;
     private volatile boolean stopRequested;
     private volatile HttpURLConnection activeChatConnection;
+    private volatile String catalogWarning;
+    private volatile String catalogLatestVersion;
+    private volatile String catalogDownloadUrl;
+    private volatile String catalogMinimumVersion;
+    private volatile String catalogForceUpgradeVersion;
     private final List<Model> models = new ArrayList<>();
     private final JSONArray messages = new JSONArray();
 
@@ -108,8 +124,16 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-        sessionToken = prefs.getString("sessionToken", null);
-        goKey = prefs.getString("goKey", null);
+        securePrefs = new SecurePreferences(this);
+        migratePlaintextCredentials();
+        sessionToken = securePrefs.get("sessionToken");
+        goKey = securePrefs.get("goKey");
+        chatDao = ChatDatabase.get(this).chatDao();
+        currentConversationId = prefs.getString("currentConversationId", "");
+        if (currentConversationId == null || currentConversationId.isEmpty()) {
+            currentConversationId = UUID.randomUUID().toString();
+            prefs.edit().putString("currentConversationId", currentConversationId).apply();
+        }
         selectedModel = prefs.getString("model", null);
         accountEmail = prefs.getString("accountEmail", "");
         try { credits = Double.parseDouble(prefs.getString("creditsUsd", "0")); }
@@ -123,6 +147,20 @@ public class MainActivity extends Activity {
             if (sessionToken != null) restoreSession();
             root.postDelayed(() -> checkAppUpdate(false), 1800);
         }
+    }
+
+    @Override
+    protected void onDestroy() {
+        storageExecutor.shutdown();
+        super.onDestroy();
+    }
+
+    private void migratePlaintextCredentials() {
+        String oldSession = prefs.getString("sessionToken", null);
+        String oldGoKey = prefs.getString("goKey", null);
+        if (securePrefs.get("sessionToken") == null && oldSession != null) securePrefs.put("sessionToken", oldSession);
+        if (securePrefs.get("goKey") == null && oldGoKey != null) securePrefs.put("goKey", oldGoKey);
+        prefs.edit().remove("sessionToken").remove("goKey").apply();
     }
 
     @Override
@@ -140,6 +178,10 @@ public class MainActivity extends Activity {
             selectedImageName = "图片";
             updateAttachmentPreview();
             boolean switched = selectVisionModelForImage();
+            Model imageModel = findModel(selectedModel);
+            if (imageModel == null || !imageModel.isAvailable() || !imageModel.vision) {
+                throw new Exception("当前目录没有可用的图片模型");
+            }
             statusText.setText(switched
                     ? "已附加图片 · 已切换到 " + modelLabel(selectedModel)
                     : "已附加图片 · 当前模型 " + modelLabel(selectedModel));
@@ -379,9 +421,11 @@ public class MainActivity extends Activity {
     private void showHeaderMenu(View anchor) {
         PopupMenu menu = new PopupMenu(this, anchor);
         menu.getMenu().add("检查更新");
+        if (sessionToken != null) menu.getMenu().add("会话列表");
         if (sessionToken != null) menu.getMenu().add("退出登录");
         menu.setOnMenuItemClickListener(item -> {
             if ("检查更新".contentEquals(item.getTitle())) checkAppUpdate(true);
+            else if ("会话列表".contentEquals(item.getTitle())) showConversationList("");
             else if ("退出登录".contentEquals(item.getTitle())) logout();
             return true;
         });
@@ -422,7 +466,7 @@ public class MainActivity extends Activity {
         accountEmail = "smoke-test";
         credits = 0;
         models.clear();
-        models.add(new Model(PREFERRED_MODEL, PREFERRED_MODEL));
+        models.add(Model.basic(PREFERRED_MODEL, PREFERRED_MODEL));
         setBusy(false, "Smoke test");
         showChat();
         root.postDelayed(() -> focusPromptInput(true), 400);
@@ -448,11 +492,12 @@ public class MainActivity extends Activity {
                 JSONObject resp = postJson(PLATFORM + "/api/auth/login", body, null, true);
                 sessionToken = resp.optString("sessionToken", "");
                 if (sessionToken.isEmpty()) throw new Exception("服务端未返回 sessionToken");
-                prefs.edit().putString("sessionToken", sessionToken).apply();
+                securePrefs.put("sessionToken", sessionToken);
                 bootstrapAccount();
                 runOnUiThread(() -> {
-                    setBusy(false, "已登录");
+                    setBusy(false, catalogWarning == null ? "已登录" : catalogWarning);
                     showChat();
+                    showCatalogWarningIfNeeded();
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
@@ -470,14 +515,16 @@ public class MainActivity extends Activity {
             try {
                 bootstrapAccount();
                 runOnUiThread(() -> {
-                    setBusy(false, "已连接 15code");
+                    setBusy(false, catalogWarning == null ? "已连接 15code" : catalogWarning);
                     showChat();
+                    showCatalogWarningIfNeeded();
                 });
             } catch (Exception e) {
                 String message = e.getMessage() == null ? "" : e.getMessage();
                 boolean authExpired = message.contains("HTTP 401") || message.contains("HTTP 403");
                 if (authExpired) {
-                    prefs.edit().remove("sessionToken").remove("goKey").apply();
+                    securePrefs.remove("sessionToken");
+                    securePrefs.remove("goKey");
                     sessionToken = null;
                     goKey = null;
                     runOnUiThread(() -> {
@@ -518,29 +565,83 @@ public class MainActivity extends Activity {
             goKey = postJson(PLATFORM + "/api/tokens", req, sessionToken, false).optString("goKey");
         }
         if (goKey.isEmpty()) throw new Exception("未找到可用 API Key");
-        prefs.edit().putString("goKey", goKey).apply();
+        securePrefs.put("goKey", goKey);
 
-        JSONArray pricing = getJson(PLATFORM + "/api/pricing", sessionToken).optJSONArray("models");
-        models.clear();
-        if (pricing != null) {
-            for (int i = 0; i < pricing.length(); i++) {
-                JSONObject m = pricing.getJSONObject(i);
-                String id = m.optString("modelId");
-                String name = m.optString("displayName", id);
-                if (!id.isEmpty()) models.add(new Model(id, name));
+        refreshCatalog();
+        selectAvailableModel();
+    }
+
+    private void refreshCatalog() throws Exception {
+        catalogWarning = null;
+        try {
+            JSONObject catalog = getPublicJson(CATALOG);
+            int schemaVersion = catalog.optInt("schemaVersion", -1);
+            if (schemaVersion != SUPPORTED_CATALOG_SCHEMA_VERSION) {
+                catalogWarning = "目录版本较新，请升级客户端";
+                if (models.isEmpty()) throw new Exception(catalogWarning);
+                return;
             }
-        }
-        if (models.isEmpty()) throw new Exception("未加载到可用模型");
-        saveCachedModels();
-        if (selectedModel == null || selectedModel.isEmpty()) {
-            selectedModel = models.get(0).id;
-            for (Model model : models) {
-                if (PREFERRED_MODEL.equals(model.id)) {
-                    selectedModel = model.id;
-                    break;
+            JSONArray rows = catalog.optJSONArray("models");
+            JSONObject releases = catalog.optJSONObject("releases");
+            JSONObject android = releases == null ? null : releases.optJSONObject("android");
+            JSONObject stable = android == null ? null : android.optJSONObject("stable");
+            if (stable != null) {
+                catalogLatestVersion = stable.optString("version", "");
+                catalogDownloadUrl = absolutePlatformUrl(stable.optString("downloadUrl", ANDROID_RELEASES));
+                catalogMinimumVersion = stable.optString("minimumSupportedVersion", "");
+                catalogForceUpgradeVersion = stable.optString("forceUpgradeBelow", "");
+            }
+            List<Model> fresh = new ArrayList<>();
+            if (rows != null) {
+                for (int i = 0; i < rows.length(); i++) {
+                    JSONObject row = rows.optJSONObject(i);
+                    if (row == null) continue;
+                    String id = row.optString("id", "");
+                    if (id.isEmpty()) continue;
+                    JSONObject capabilities = row.optJSONObject("capabilities");
+                    fresh.add(new Model(
+                            id,
+                            row.optString("displayName", id),
+                            row.optString("provider", ""),
+                            row.optString("family", "other"),
+                            row.optString("status", "available"),
+                            row.optBoolean("recommended", false),
+                            row.optInt("sortOrder", Integer.MAX_VALUE),
+                            capabilities != null && capabilities.optBoolean("vision", false),
+                            capabilities != null && capabilities.optBoolean("webSearch", false),
+                            capabilities != null && capabilities.optBoolean("tools", false)));
                 }
             }
+            fresh.sort((left, right) -> {
+                int order = Integer.compare(left.sortOrder, right.sortOrder);
+                return order != 0 ? order : left.name.compareToIgnoreCase(right.name);
+            });
+            if (fresh.isEmpty()) throw new Exception("Catalog 未返回模型");
+            models.clear();
+            models.addAll(fresh);
+            saveCachedModels();
+        } catch (Exception e) {
+            if (catalogWarning != null && !models.isEmpty()) return;
+            if (!models.isEmpty()) {
+                catalogWarning = "离线目录 · 暂时无法刷新";
+                return;
+            }
+            throw e;
         }
+    }
+
+    private void selectAvailableModel() throws Exception {
+        Model current = findModel(selectedModel);
+        if (current != null && current.isAvailable()) return;
+        Model fallback = null;
+        for (Model model : models) {
+            if (!model.isAvailable()) continue;
+            if (fallback == null || model.recommended) fallback = model;
+            if (model.recommended) break;
+        }
+        if (fallback == null) throw new Exception("当前没有可用模型");
+        selectedModel = fallback.id;
+        prefs.edit().putString("model", selectedModel).apply();
     }
 
     private void loadCachedModels() {
@@ -552,7 +653,17 @@ public class MainActivity extends Activity {
                 JSONObject row = saved.optJSONObject(i);
                 if (row == null) continue;
                 String id = row.optString("id", "");
-                if (!id.isEmpty()) models.add(new Model(id, row.optString("name", id)));
+                if (!id.isEmpty()) models.add(new Model(
+                        id,
+                        row.optString("name", id),
+                        row.optString("provider", ""),
+                        row.optString("family", "other"),
+                        row.optString("status", "available"),
+                        row.optBoolean("recommended", false),
+                        row.optInt("sortOrder", Integer.MAX_VALUE),
+                        row.optBoolean("vision", false),
+                        row.optBoolean("webSearch", false),
+                        row.optBoolean("tools", false)));
             }
         } catch (Exception ignored) {
             models.clear();
@@ -566,6 +677,14 @@ public class MainActivity extends Activity {
                 JSONObject row = new JSONObject();
                 row.put("id", model.id);
                 row.put("name", model.name);
+                row.put("provider", model.provider);
+                row.put("family", model.family);
+                row.put("status", model.status);
+                row.put("recommended", model.recommended);
+                row.put("sortOrder", model.sortOrder);
+                row.put("vision", model.vision);
+                row.put("webSearch", model.webSearch);
+                row.put("tools", model.tools);
                 saved.put(row);
             }
             prefs.edit().putString("cachedModels", saved.toString()).apply();
@@ -610,6 +729,8 @@ public class MainActivity extends Activity {
         input.setHintTextColor(0xFF94A3B8);
         input.setTextSize(16);
         input.setBackground(makeBg(0xFFF8FAFC, 0xFFCBD5E1, dp(14)));
+        input.setText(currentDraft);
+        input.setSelection(input.getText().length());
         sheet.addView(input, new LinearLayout.LayoutParams(-1, dp(132)));
 
         LinearLayout actions = new LinearLayout(this);
@@ -639,6 +760,7 @@ public class MainActivity extends Activity {
         popup.setOutsideTouchable(true);
         popup.setInputMethodMode(PopupWindow.INPUT_METHOD_NEEDED);
         popup.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        popup.setOnDismissListener(() -> saveDraft(input.getText().toString()));
 
         cancel.setOnClickListener(v -> popup.dismiss());
         send.setOnClickListener(v -> {
@@ -648,6 +770,7 @@ public class MainActivity extends Activity {
                 return;
             }
             popup.dismiss();
+            saveDraft("");
             sendMessageText(text);
         });
 
@@ -776,7 +899,61 @@ public class MainActivity extends Activity {
     }
 
     private void saveChatHistory() {
-        prefs.edit().putString("chatHistory", messages.toString()).apply();
+        final String conversationId = currentConversationId;
+        final String snapshot = messages.toString();
+        storageExecutor.execute(() -> persistConversation(conversationId, snapshot));
+    }
+
+    private void persistConversation(String conversationId, String snapshot) {
+        try {
+            JSONArray saved = new JSONArray(snapshot);
+            long now = System.currentTimeMillis();
+            ConversationWithMessages existing = chatDao.getConversation(conversationId);
+            long createdAt = existing == null ? now : existing.conversation.createdAt;
+            boolean pinned = existing != null && existing.conversation.pinned;
+            boolean deleted = existing != null && existing.conversation.deleted;
+            String title = existing == null ? conversationTitle(saved) : existing.conversation.title;
+            if ((title == null || title.equals("新对话")) && saved.length() > 0) title = conversationTitle(saved);
+            chatDao.saveConversation(new ConversationEntity(conversationId, title, pinned, deleted,
+                    createdAt, now, currentDraft == null ? "" : currentDraft));
+            chatDao.deleteMessages(conversationId);
+            List<MessageEntity> rows = new ArrayList<>();
+            for (int i = 0; i < saved.length(); i++) {
+                JSONObject item = saved.optJSONObject(i);
+                if (item == null) continue;
+                rows.add(new MessageEntity(conversationId, item.optString("role"),
+                        item.optString("content"), now + i));
+            }
+            if (!rows.isEmpty()) chatDao.saveMessages(rows);
+            prefs.edit().remove("chatHistory").apply();
+        } catch (Exception ignored) {}
+    }
+
+    private String conversationTitle(JSONArray saved) {
+        for (int i = 0; i < saved.length(); i++) {
+            JSONObject item = saved.optJSONObject(i);
+            if (item == null || !"user".equals(item.optString("role"))) continue;
+            String text = item.optString("content", "").replace('\n', ' ').trim();
+            if (text.length() > 28) text = text.substring(0, 28) + "…";
+            if (!text.isEmpty()) return text;
+        }
+        return "新对话";
+    }
+
+    private void saveDraft(String draft) {
+        currentDraft = draft == null ? "" : draft;
+        final String conversationId = currentConversationId;
+        final String value = currentDraft;
+        storageExecutor.execute(() -> {
+            ConversationWithMessages existing = chatDao.getConversation(conversationId);
+            long now = System.currentTimeMillis();
+            if (existing == null) {
+                chatDao.saveConversation(new ConversationEntity(conversationId, "新对话", false,
+                        false, now, now, value));
+            } else {
+                chatDao.saveDraft(conversationId, value, now);
+            }
+        });
     }
 
     private void streamChat(JSONObject body, StreamHandler handler) throws Exception {
@@ -939,41 +1116,62 @@ public class MainActivity extends Activity {
         accountText.setText((accountEmail == null || accountEmail.isEmpty() ? "已登录" : accountEmail)
                 + " · 余额 " + String.format("%.4f", credits));
         updateModelButton();
-        if (messageList.getChildCount() == 0) {
+        updateSearchButton();
+        if (messageList.getChildCount() == 0 && !historyLoadStarted) {
             loadChatHistory();
-        }
-        if (messageList.getChildCount() == 0) {
-            addBubble("15code", "已连接。", false);
         }
     }
 
     private void loadChatHistory() {
-        String raw = prefs.getString("chatHistory", "");
-        if (raw == null || raw.isEmpty()) return;
-        try {
-            JSONArray saved = new JSONArray(raw);
-            while (messages.length() > 0) messages.remove(0);
-            int start = Math.max(0, saved.length() - MAX_HISTORY_MESSAGES);
-            for (int i = start; i < saved.length(); i++) {
-                JSONObject src = saved.getJSONObject(i);
-                String role = src.optString("role");
-                String content = src.optString("content");
-                if ((!role.equals("user") && !role.equals("assistant")) || content.isEmpty()) continue;
-                JSONObject msg = new JSONObject();
-                msg.put("role", role);
-                msg.put("content", content);
-                messages.put(msg);
-                addBubble(role.equals("user") ? "你" : modelLabel(selectedModel), content, role.equals("user"));
+        historyLoadStarted = true;
+        final String conversationId = currentConversationId;
+        storageExecutor.execute(() -> {
+            ConversationWithMessages stored = chatDao.getConversation(conversationId);
+            String legacy = prefs.getString("chatHistory", "");
+            if (stored == null && legacy != null && !legacy.isEmpty()) {
+                persistConversation(conversationId, legacy);
+                stored = chatDao.getConversation(conversationId);
             }
-            trimMessages();
-        } catch (Exception ignored) {
-            prefs.edit().remove("chatHistory").apply();
+            ConversationWithMessages result = stored;
+            runOnUiThread(() -> renderConversation(result));
+        });
+    }
+
+    private void renderConversation(ConversationWithMessages stored) {
+        messageList.removeAllViews();
+        while (messages.length() > 0) messages.remove(0);
+        currentDraft = stored == null ? "" : stored.conversation.draft;
+        if (stored != null && stored.messages != null) {
+            stored.messages.sort((left, right) -> Long.compare(left.createdAt, right.createdAt));
+            int start = Math.max(0, stored.messages.size() - MAX_HISTORY_MESSAGES);
+            for (int i = start; i < stored.messages.size(); i++) {
+                MessageEntity row = stored.messages.get(i);
+                if (row.content == null || row.content.isEmpty()) continue;
+                try {
+                    JSONObject msg = new JSONObject();
+                    msg.put("role", row.role);
+                    msg.put("content", row.content);
+                    messages.put(msg);
+                    addBubble("user".equals(row.role) ? "你" : modelLabel(selectedModel),
+                            row.content, "user".equals(row.role));
+                } catch (Exception ignored) {}
+            }
         }
+        if (messageList.getChildCount() == 0) addBubble("15code", "已连接。", false);
+        historyLoadStarted = false;
     }
 
     private List<String> modelNames() {
         List<String> names = new ArrayList<>();
-        for (Model m : models) names.add(m.name + "  ·  " + m.id);
+        for (Model m : models) {
+            StringBuilder label = new StringBuilder(m.name).append("  ·  ").append(m.provider);
+            if (m.recommended) label.append("  ·  推荐");
+            if (m.vision) label.append("  ·  图片");
+            if (m.webSearch) label.append("  ·  联网");
+            if (m.tools) label.append("  ·  工具");
+            if (!m.isAvailable()) label.append("  ·  ").append(modelStatusLabel(m.status));
+            names.add(label.toString());
+        }
         return names;
     }
 
@@ -993,9 +1191,16 @@ public class MainActivity extends Activity {
         new AlertDialog.Builder(this)
                 .setTitle("选择模型")
                 .setSingleChoiceItems(labels, selected, (dialog, which) -> {
-                    selectedModel = models.get(which).id;
+                    Model chosen = models.get(which);
+                    if (!chosen.isAvailable()) {
+                        toast("该模型当前" + modelStatusLabel(chosen.status));
+                        return;
+                    }
+                    selectedModel = chosen.id;
                     prefs.edit().putString("model", selectedModel).apply();
+                    if (!chosen.webSearch) forceWebSearch = false;
                     updateModelButton();
+                    updateSearchButton();
                     dialog.dismiss();
                 })
                 .setNegativeButton("取消", null)
@@ -1009,27 +1214,53 @@ public class MainActivity extends Activity {
     }
 
     private boolean selectVisionModelForImage() {
-        if (!"qwen3.6".equals(selectedModel)) return false;
+        Model current = findModel(selectedModel);
+        if (current != null && current.isAvailable() && current.vision) return false;
+        Model fallback = null;
         for (Model model : models) {
-            if ("gpt-5.6-terra".equals(model.id)) {
-                selectedModel = model.id;
-                prefs.edit().putString("model", selectedModel).apply();
-                updateModelButton();
-                return true;
-            }
+            if (!model.isAvailable() || !model.vision) continue;
+            if (fallback == null || model.recommended) fallback = model;
+            if (model.recommended) break;
         }
-        return false;
+        if (fallback == null) return false;
+        selectedModel = fallback.id;
+        prefs.edit().putString("model", selectedModel).apply();
+        updateModelButton();
+        updateSearchButton();
+        return true;
     }
 
     private void updateSearchButton() {
         if (searchButton == null) return;
-        searchButton.setText(forceWebSearch ? "联网开" : "联网");
-        searchButton.setTextColor(forceWebSearch ? 0xFFFFFFFF : 0xFF0F172A);
+        Model current = findModel(selectedModel);
+        boolean supported = current == null || current.webSearch;
+        if (!supported) forceWebSearch = false;
+        searchButton.setEnabled(supported);
+        searchButton.setText(!supported ? "不支持" : forceWebSearch ? "联网开" : "联网");
+        searchButton.setTextColor(forceWebSearch ? 0xFFFFFFFF : supported ? 0xFF0F172A : 0xFF94A3B8);
         searchButton.setBackground(makeBg(
                 forceWebSearch ? 0xFF059669 : 0xFFFFFFFF,
                 forceWebSearch ? 0xFF059669 : 0xFFCBD5E1,
                 dp(18)));
-        statusText.setText(forceWebSearch ? "联网检索已开启" : "自动检索");
+        statusText.setText(!supported ? "当前模型不支持联网" : forceWebSearch ? "联网检索已开启" : "自动检索");
+    }
+
+    private Model findModel(String id) {
+        if (id == null) return null;
+        for (Model model : models) if (id.equals(model.id)) return model;
+        return null;
+    }
+
+    private String modelStatusLabel(String status) {
+        if ("maintenance".equals(status)) return "维护中";
+        if ("paused".equals(status) || "disabled".equals(status)) return "已暂停";
+        return "不可用";
+    }
+
+    private void showCatalogWarningIfNeeded() {
+        if (catalogWarning == null || catalogWarning.isEmpty()) return;
+        toast(catalogWarning);
+        catalogWarning = null;
     }
 
     private String modelLabel(String id) {
@@ -1125,6 +1356,10 @@ public class MainActivity extends Activity {
     }
 
     private void newChat() {
+        saveChatHistory();
+        currentConversationId = UUID.randomUUID().toString();
+        prefs.edit().putString("currentConversationId", currentConversationId).apply();
+        currentDraft = "";
         while (messages.length() > 0) messages.remove(0);
         prefs.edit().remove("chatHistory").apply();
         selectedImageDataUrl = null;
@@ -1133,10 +1368,13 @@ public class MainActivity extends Activity {
         messageList.removeAllViews();
         addBubble("15code", "新对话已开始。", false);
         promptInput.setText("");
+        saveDraft("");
     }
 
     private void logout() {
-        prefs.edit().clear().apply();
+        securePrefs.remove("sessionToken");
+        securePrefs.remove("goKey");
+        prefs.edit().remove("accountEmail").remove("creditsUsd").apply();
         sessionToken = null;
         goKey = null;
         selectedModel = null;
@@ -1146,6 +1384,98 @@ public class MainActivity extends Activity {
         while (messages.length() > 0) messages.remove(0);
         messageList.removeAllViews();
         showLogin();
+    }
+
+    private void showConversationList(String query) {
+        storageExecutor.execute(() -> {
+            List<ConversationEntity> rows = chatDao.listConversations(query == null ? "" : query.trim());
+            runOnUiThread(() -> {
+                String[] labels = new String[rows.size()];
+                for (int i = 0; i < rows.size(); i++) {
+                    ConversationEntity row = rows.get(i);
+                    labels[i] = (row.pinned ? "📌 " : "") + row.title;
+                }
+                new AlertDialog.Builder(this)
+                        .setTitle(query == null || query.isEmpty() ? "会话列表" : "搜索：" + query)
+                        .setItems(labels, (dialog, which) -> showConversationActions(rows.get(which)))
+                        .setPositiveButton("搜索", (dialog, which) -> promptConversationSearch())
+                        .setNeutralButton("最近删除", (dialog, which) -> showDeletedConversations())
+                        .setNegativeButton("关闭", null)
+                        .show();
+            });
+        });
+    }
+
+    private void promptConversationSearch() {
+        EditText input = new EditText(this);
+        input.setHint("输入会话标题");
+        input.setSingleLine(true);
+        new AlertDialog.Builder(this)
+                .setTitle("搜索会话")
+                .setView(input)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("搜索", (dialog, which) -> showConversationList(input.getText().toString()))
+                .show();
+    }
+
+    private void showConversationActions(ConversationEntity conversation) {
+        String pinLabel = conversation.pinned ? "取消置顶" : "置顶";
+        new AlertDialog.Builder(this)
+                .setTitle(conversation.title)
+                .setItems(new String[]{"打开", "重命名", pinLabel, "删除"}, (dialog, which) -> {
+                    if (which == 0) openConversation(conversation.id);
+                    else if (which == 1) renameConversation(conversation);
+                    else if (which == 2) storageExecutor.execute(() ->
+                            chatDao.setPinned(conversation.id, !conversation.pinned, System.currentTimeMillis()));
+                    else storageExecutor.execute(() -> {
+                        chatDao.setDeleted(conversation.id, true, System.currentTimeMillis());
+                        if (conversation.id.equals(currentConversationId)) runOnUiThread(this::newChat);
+                    });
+                })
+                .show();
+    }
+
+    private void renameConversation(ConversationEntity conversation) {
+        EditText input = new EditText(this);
+        input.setText(conversation.title);
+        input.setSelection(input.getText().length());
+        new AlertDialog.Builder(this)
+                .setTitle("重命名会话")
+                .setView(input)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("保存", (dialog, which) -> {
+                    String title = input.getText().toString().trim();
+                    if (!title.isEmpty()) storageExecutor.execute(() ->
+                            chatDao.rename(conversation.id, title, System.currentTimeMillis()));
+                })
+                .show();
+    }
+
+    private void openConversation(String id) {
+        saveChatHistory();
+        currentConversationId = id;
+        prefs.edit().putString("currentConversationId", id).apply();
+        historyLoadStarted = false;
+        loadChatHistory();
+    }
+
+    private void showDeletedConversations() {
+        storageExecutor.execute(() -> {
+            List<ConversationEntity> rows = chatDao.listDeleted();
+            runOnUiThread(() -> {
+                String[] labels = new String[rows.size()];
+                for (int i = 0; i < rows.size(); i++) labels[i] = rows.get(i).title;
+                new AlertDialog.Builder(this)
+                        .setTitle("最近删除")
+                        .setItems(labels, (dialog, which) -> {
+                            ConversationEntity row = rows.get(which);
+                            storageExecutor.execute(() -> chatDao.setDeleted(row.id, false, System.currentTimeMillis()));
+                            toast("会话已恢复");
+                        })
+                        .setNegativeButton("关闭", null)
+                        .show();
+            });
+        });
     }
 
     private void setBusy(boolean busy, String status) {
@@ -1191,34 +1521,51 @@ public class MainActivity extends Activity {
         if (manual) setBusy(true, "正在检查更新...");
         new Thread(() -> {
             try {
-                JSONObject release = getPublicJson(ANDROID_LATEST_RELEASE);
-                String tag = release.optString("tag_name", "");
-                String version = normaliseVersion(tag);
-                String url = release.optString("html_url", ANDROID_RELEASES);
+                JSONObject catalog = getPublicJson(CATALOG);
+                JSONObject releases = catalog.optJSONObject("releases");
+                JSONObject android = releases == null ? null : releases.optJSONObject("android");
+                JSONObject release = android == null ? null : android.optJSONObject("stable");
+                if (release == null) throw new Exception("Catalog 未返回 Android Release");
+                String version = release.optString("version", "");
+                String tag = "v" + version;
+                String url = absolutePlatformUrl(release.optString("downloadUrl", ANDROID_RELEASES));
+                String minimum = release.optString("minimumSupportedVersion", "");
+                String forceBelow = release.optString("forceUpgradeBelow", "");
                 boolean hasUpdate = compareVersion(version, APP_VERSION) > 0;
+                boolean mandatory = (!forceBelow.isEmpty() && compareVersion(APP_VERSION, forceBelow) < 0)
+                        || (!minimum.isEmpty() && compareVersion(APP_VERSION, minimum) < 0);
                 runOnUiThread(() -> {
                     if (manual) setBusy(false, hasUpdate ? "发现新版 " + tag : "当前已是最新版本");
-                    if (hasUpdate) showUpdateDialog(tag, url);
+                    if (hasUpdate || mandatory) showUpdateDialog(tag, url, mandatory);
                     else if (manual) toast("当前已是最新版本");
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
                     if (manual) {
                         setBusy(false, "检查更新失败");
-                        toast("无法连接 GitHub，请稍后重试");
+                        toast("无法读取 Catalog Release，请稍后重试");
                     }
                 });
             }
         }).start();
     }
 
-    private void showUpdateDialog(String tag, String url) {
-        new AlertDialog.Builder(this)
+    private void showUpdateDialog(String tag, String url, boolean mandatory) {
+        AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("发现新版本 " + tag)
-                .setMessage("可通过 GitHub Releases 下载新版 APK。安装时如提示未知来源，请在系统设置中允许浏览器安装。")
-                .setNegativeButton("稍后", null)
-                .setPositiveButton("打开 GitHub", (d, which) -> openExternal(url == null || url.isEmpty() ? ANDROID_RELEASES : url))
-                .show();
+                .setMessage(mandatory ? "当前版本已低于最低支持版本，请升级后继续使用。" : "新版 APK 已发布，可从 15code 下载并覆盖安装。")
+                .setNegativeButton(mandatory ? null : "稍后", null)
+                .setPositiveButton("立即下载", (d, which) -> openExternal(url == null || url.isEmpty() ? ANDROID_RELEASES : url))
+                .create();
+        dialog.setCancelable(!mandatory);
+        dialog.setCanceledOnTouchOutside(!mandatory);
+        dialog.show();
+    }
+
+    private String absolutePlatformUrl(String value) {
+        if (value == null || value.isEmpty()) return ANDROID_RELEASES;
+        if (value.startsWith("http://") || value.startsWith("https://")) return value;
+        return PLATFORM + (value.startsWith("/") ? value : "/" + value);
     }
 
     private void openExternal(String url) {
@@ -1321,9 +1668,36 @@ public class MainActivity extends Activity {
     private static class Model {
         final String id;
         final String name;
-        Model(String id, String name) {
+        final String provider;
+        final String family;
+        final String status;
+        final boolean recommended;
+        final int sortOrder;
+        final boolean vision;
+        final boolean webSearch;
+        final boolean tools;
+
+        Model(String id, String name, String provider, String family, String status,
+              boolean recommended, int sortOrder, boolean vision, boolean webSearch, boolean tools) {
             this.id = id;
             this.name = name;
+            this.provider = provider;
+            this.family = family;
+            this.status = status;
+            this.recommended = recommended;
+            this.sortOrder = sortOrder;
+            this.vision = vision;
+            this.webSearch = webSearch;
+            this.tools = tools;
+        }
+
+        static Model basic(String id, String name) {
+            return new Model(id, name, "", "other", "available", false,
+                    Integer.MAX_VALUE, false, true, false);
+        }
+
+        boolean isAvailable() {
+            return "available".equals(status);
         }
     }
 

@@ -38,8 +38,8 @@ android {
         applicationId "com.fifteencode.android"
         minSdk 24
         targetSdk 35
-        versionCode 29
-        versionName "1.4.1"
+        versionCode 30
+        versionName "1.4.2"
     }
 
     buildTypes {
@@ -52,6 +52,11 @@ android {
             }
         }
     }
+}
+
+dependencies {
+    implementation "androidx.room:room-runtime:2.7.2"
+    annotationProcessor "androidx.room:room-compiler:2.7.2"
 }
 
 gradle.taskGraph.whenReady { graph ->

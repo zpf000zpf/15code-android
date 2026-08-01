@@ -11,12 +11,12 @@ fail() {
   exit 1
 }
 
-grep -q 'private static final String APP_VERSION = "1.4.1";' "$MAIN" \
-  || fail "APP_VERSION must be 1.4.1"
-grep -q 'versionName "1.4.1"' "$GRADLE" \
-  || fail "Gradle versionName must be 1.4.1"
-grep -q 'versionCode 29' "$GRADLE" \
-  || fail "Gradle versionCode must be 29"
+grep -q 'private static final String APP_VERSION = "1.4.2";' "$MAIN" \
+  || fail "APP_VERSION must be 1.4.2"
+grep -q 'versionName "1.4.2"' "$GRADLE" \
+  || fail "Gradle versionName must be 1.4.2"
+grep -q 'versionCode 30' "$GRADLE" \
+  || fail "Gradle versionCode must be 30"
 grep -q 'signingConfigs' "$GRADLE" \
   || fail "stable debug signing config is required"
 grep -q '15code-debug.keystore' "$GRADLE" \
@@ -37,10 +37,33 @@ grep -q 'messageList.getHeight() - scroll.getHeight()' "$MAIN" \
   || fail "streaming chat must scroll using measured content height"
 grep -q 'selectVisionModelForImage()' "$MAIN" \
   || fail "image attachments must switch away from the text-only default model"
+grep -q 'CATALOG = PLATFORM + "/api/catalog"' "$MAIN" \
+  || fail "Android models must load from the public Catalog"
+grep -q 'SUPPORTED_CATALOG_SCHEMA_VERSION = 1' "$MAIN" \
+  || fail "Android must reject unknown Catalog schema versions safely"
+grep -q 'capabilities.optBoolean("vision", false)' "$MAIN" \
+  || fail "image support must come from Catalog capabilities"
+grep -q 'catalogWarning = "离线目录 · 暂时无法刷新"' "$MAIN" \
+  || fail "Catalog failures must preserve the last successful offline directory"
+if grep -q 'PLATFORM + "/api/pricing"' "$MAIN"; then
+  fail "Android model metadata must not fall back to the authenticated pricing endpoint"
+fi
+if grep -q '"qwen3.6".equals(selectedModel)' "$MAIN"; then
+  fail "Android image routing must not hard-code qwen3.6"
+fi
 grep -q '正在后台同步账户' "$MAIN" \
   || fail "saved sessions must open chat before background account refresh"
-grep -q 'remove("sessionToken").remove("goKey")' "$MAIN" \
-  || fail "session expiry must not clear local chat history"
+if grep -q 'prefs.edit().putString("sessionToken"' "$MAIN" || grep -q 'prefs.edit().putString("goKey"' "$MAIN"; then
+  fail "credentials must not remain in plaintext SharedPreferences"
+fi
+grep -q 'SecurePreferences' "$MAIN" \
+  || fail "credentials must use Android Keystore encryption"
+grep -q 'ChatDatabase.get' "$MAIN" \
+  || fail "chat history must use Room"
+grep -q 'room-runtime' "$GRADLE" \
+  || fail "Room runtime dependency is required"
+grep -q 'forceUpgradeBelow' "$MAIN" \
+  || fail "Catalog minimum-version policy must be enforced"
 grep -q 'PopupMenu menu = new PopupMenu' "$MAIN" \
   || fail "header actions must use the compact overflow menu"
 grep -q 'attachmentPreview.setVisibility(View.VISIBLE)' "$MAIN" \
