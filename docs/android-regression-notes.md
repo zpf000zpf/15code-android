@@ -29,7 +29,8 @@ accidentally reversed in later releases.
 | v1.3.14 | current | Opens cached chat immediately while account data refreshes in the background, and preserves local history on temporary network failures. |
 | v1.4.1 | current | Introduces the mandatory production Release signature and retains the v1.4.0 interface behavior. Existing debug-signed installs require uninstall/reinstall migration. |
 | v1.4.0 | previous | Simplifies the header, moves secondary actions into an overflow menu, combines account/model controls, and adds a removable image preview. |
-| v1.4.3 | current | Adds permission-aware image generation and editing through `cli.15code.com/v1`, with preview, iterative editing, and gallery save. |
+| v1.4.4 | current | Uses the public `gpt-image-2` model for generation and editing, matching the server permission and pricing boundary. |
+| v1.4.3 | previous | Adds permission-aware image generation and editing through `cli.15code.com/v1`, with preview, iterative editing, and gallery save. |
 
 ## Guardrails
 
