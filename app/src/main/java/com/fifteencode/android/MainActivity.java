@@ -471,7 +471,7 @@ public class MainActivity extends Activity {
                 if (edit) result = postImageEdit(prompt, selectedImageDataUrl);
                 else {
                     JSONObject body = new JSONObject();
-                    body.put("model", "gpt-image-1.5"); body.put("prompt", prompt);
+                    body.put("model", "gpt-image-2"); body.put("prompt", prompt);
                     body.put("size", "1024x1024"); body.put("quality", "low"); body.put("output_format", "png");
                     result = postJson(IMAGE_GENERATIONS, body, goKey, false);
                 }
