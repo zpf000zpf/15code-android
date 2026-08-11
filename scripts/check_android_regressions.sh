@@ -30,6 +30,8 @@ grep -q 'IMAGE_GENERATIONS = "https://cli.15code.com/v1/images/generations"' "$M
   || fail "Android image generation must use cli.15code.com Images API"
 grep -q 'IMAGE_EDITS = "https://cli.15code.com/v1/images/edits"' "$MAIN" \
   || fail "Android image editing must use cli.15code.com Images API"
+grep -q 'body.put("model", "gpt-image-2")' "$MAIN" \
+  || fail "Android image generation must use the public gpt-image-2 model"
 grep -q '当前账号尚未开通图片权限' "$MAIN" \
   || fail "Android image UI must preserve the server permission boundary"
 grep -q 'body.put("searchMode", "auto")' "$MAIN" \
