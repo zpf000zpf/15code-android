@@ -11,12 +11,12 @@ fail() {
   exit 1
 }
 
-grep -q 'private static final String APP_VERSION = "1.4.2";' "$MAIN" \
-  || fail "APP_VERSION must be 1.4.2"
-grep -q 'versionName "1.4.2"' "$GRADLE" \
-  || fail "Gradle versionName must be 1.4.2"
-grep -q 'versionCode 30' "$GRADLE" \
-  || fail "Gradle versionCode must be 30"
+grep -q 'private static final String APP_VERSION = "1.4.3";' "$MAIN" \
+  || fail "APP_VERSION must be 1.4.3"
+grep -q 'versionName "1.4.3"' "$GRADLE" \
+  || fail "Gradle versionName must be 1.4.3"
+grep -q 'versionCode 31' "$GRADLE" \
+  || fail "Gradle versionCode must be 31"
 grep -q 'signingConfigs' "$GRADLE" \
   || fail "stable debug signing config is required"
 grep -q '15code-debug.keystore' "$GRADLE" \
@@ -26,6 +26,12 @@ grep -q '15code-debug.keystore' "$GRADLE" \
 
 grep -q 'SEARCH_CHAT = PLATFORM + "/api/search-chat"' "$MAIN" \
   || fail "Android chat must use platform /api/search-chat"
+grep -q 'IMAGE_GENERATIONS = "https://cli.15code.com/v1/images/generations"' "$MAIN" \
+  || fail "Android image generation must use cli.15code.com Images API"
+grep -q 'IMAGE_EDITS = "https://cli.15code.com/v1/images/edits"' "$MAIN" \
+  || fail "Android image editing must use cli.15code.com Images API"
+grep -q '当前账号尚未开通图片权限' "$MAIN" \
+  || fail "Android image UI must preserve the server permission boundary"
 grep -q 'body.put("searchMode", "auto")' "$MAIN" \
   || fail "Android chat must enable automatic search mode"
 grep -q 'Authorization", "Bearer " + sessionToken' "$MAIN" \

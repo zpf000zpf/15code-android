@@ -2,6 +2,7 @@ package com.fifteencode.android;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -12,9 +13,12 @@ import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.MediaStore;
 import android.text.InputType;
 import android.util.Base64;
 import android.view.Gravity;
@@ -56,11 +60,13 @@ public class MainActivity extends Activity {
     private static final String PLATFORM = "https://15code.com";
     private static final String CATALOG = PLATFORM + "/api/catalog";
     private static final String LLM = "https://cli.15code.com/v1/chat/completions";
+    private static final String IMAGE_GENERATIONS = "https://cli.15code.com/v1/images/generations";
+    private static final String IMAGE_EDITS = "https://cli.15code.com/v1/images/edits";
     private static final String SEARCH_CHAT = PLATFORM + "/api/search-chat";
     private static final String ANDROID_RELEASES = "https://github.com/zpf000zpf/15code-android/releases";
     private static final String ANDROID_LATEST_RELEASE = "https://api.github.com/repos/zpf000zpf/15code-android/releases/latest";
     private static final String PREFS = "15code_android";
-    private static final String APP_VERSION = "1.4.2";
+    private static final String APP_VERSION = "1.4.3";
     private static final int SUPPORTED_CATALOG_SCHEMA_VERSION = 1;
     private static final String PREFERRED_MODEL = "qwen3.6";
     private static final int PICK_IMAGE_REQUEST = 7301;
@@ -421,15 +427,112 @@ public class MainActivity extends Activity {
     private void showHeaderMenu(View anchor) {
         PopupMenu menu = new PopupMenu(this, anchor);
         menu.getMenu().add("检查更新");
+        if (sessionToken != null) menu.getMenu().add("图片生成/编辑");
         if (sessionToken != null) menu.getMenu().add("会话列表");
         if (sessionToken != null) menu.getMenu().add("退出登录");
         menu.setOnMenuItemClickListener(item -> {
             if ("检查更新".contentEquals(item.getTitle())) checkAppUpdate(true);
+            else if ("图片生成/编辑".contentEquals(item.getTitle())) showImageStudioDialog();
             else if ("会话列表".contentEquals(item.getTitle())) showConversationList("");
             else if ("退出登录".contentEquals(item.getTitle())) logout();
             return true;
         });
         menu.show();
+    }
+
+    private void showImageStudioDialog() {
+        EditText input = new EditText(this);
+        input.setHint(selectedImageDataUrl == null ? "描述要生成的图片" : "描述要生成的图片，或修改已附加图片");
+        input.setMinLines(3);
+        input.setGravity(Gravity.TOP | Gravity.START);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("图片生成与编辑").setView(input)
+                .setNegativeButton("取消", null).setPositiveButton("生成", null).create();
+        dialog.setOnShowListener(ignored -> {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                String prompt = input.getText().toString().trim();
+                if (prompt.isEmpty()) { input.setError("请输入提示词"); return; }
+                dialog.dismiss();
+                requestImage(prompt, false);
+            });
+            if (selectedImageDataUrl != null) dialog.setButton(AlertDialog.BUTTON_NEUTRAL, "修改已附加图片", (d, which) -> {
+                String prompt = input.getText().toString().trim();
+                if (prompt.isEmpty()) { toast("请输入修改要求"); return; }
+                requestImage(prompt, true);
+            });
+        });
+        dialog.show();
+    }
+
+    private void requestImage(String prompt, boolean edit) {
+        setBusy(true, edit ? "正在修改图片..." : "正在生成图片...");
+        storageExecutor.execute(() -> {
+            try {
+                JSONObject result;
+                if (edit) result = postImageEdit(prompt, selectedImageDataUrl);
+                else {
+                    JSONObject body = new JSONObject();
+                    body.put("model", "gpt-image-1.5"); body.put("prompt", prompt);
+                    body.put("size", "1024x1024"); body.put("quality", "low"); body.put("output_format", "png");
+                    result = postJson(IMAGE_GENERATIONS, body, goKey, false);
+                }
+                JSONArray data = result.optJSONArray("data");
+                String encoded = data == null || data.length() == 0 ? "" : data.optJSONObject(0).optString("b64_json", "");
+                if (encoded.isEmpty()) throw new Exception("图片服务没有返回图片数据");
+                String dataUrl = "data:image/png;base64," + encoded;
+                uiHandler.post(() -> showImageResult(dataUrl));
+            } catch (Exception e) {
+                String message = e.getMessage() != null && e.getMessage().contains("HTTP 403") ? "当前账号尚未开通图片权限" : friendlyError(e);
+                uiHandler.post(() -> toast(message));
+            } finally { uiHandler.post(() -> setBusy(false, "已连接 15code")); }
+        });
+    }
+
+    private JSONObject postImageEdit(String prompt, String dataUrl) throws Exception {
+        if (dataUrl == null) throw new Exception("请先附加要修改的图片");
+        int comma = dataUrl.indexOf(',');
+        byte[] image = Base64.decode(comma >= 0 ? dataUrl.substring(comma + 1) : dataUrl, Base64.DEFAULT);
+        String boundary = "----15code-" + UUID.randomUUID();
+        HttpURLConnection conn = (HttpURLConnection) new URL(IMAGE_EDITS).openConnection();
+        conn.setConnectTimeout(20000); conn.setReadTimeout(180000); conn.setRequestMethod("POST"); conn.setDoOutput(true);
+        conn.setRequestProperty("Authorization", "Bearer " + goKey);
+        conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
+        try (OutputStream out = conn.getOutputStream()) {
+            writeMultipartField(out, boundary, "model", "gpt-image-2"); writeMultipartField(out, boundary, "prompt", prompt);
+            writeMultipartField(out, boundary, "size", "1024x1024"); writeMultipartField(out, boundary, "quality", "low");
+            writeMultipartField(out, boundary, "output_format", "png");
+            out.write(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"image\"; filename=\"input.png\"\r\nContent-Type: image/png\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+            out.write(image); out.write(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+        }
+        int code = conn.getResponseCode();
+        String text = readAll(code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream());
+        if (code < 200 || code >= 300) throw new Exception("HTTP " + code + ": " + text);
+        return new JSONObject(text);
+    }
+
+    private void writeMultipartField(OutputStream out, String boundary, String name, String value) throws IOException {
+        out.write(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + name + "\"\r\n\r\n" + value + "\r\n").getBytes(StandardCharsets.UTF_8));
+    }
+
+    private void showImageResult(String dataUrl) {
+        byte[] bytes = Base64.decode(dataUrl.substring(dataUrl.indexOf(',') + 1), Base64.DEFAULT);
+        ImageView preview = new ImageView(this); preview.setAdjustViewBounds(true);
+        preview.setImageBitmap(BitmapFactory.decodeByteArray(bytes, 0, bytes.length));
+        new AlertDialog.Builder(this).setTitle("图片已完成").setView(preview).setNegativeButton("关闭", null)
+                .setNeutralButton("继续修改", (d, w) -> { selectedImageDataUrl = dataUrl; selectedImageName = "生成图片"; updateAttachmentPreview(); showImageStudioDialog(); })
+                .setPositiveButton("保存", (d, w) -> saveImageToGallery(bytes)).show();
+    }
+
+    private void saveImageToGallery(byte[] bytes) {
+        try {
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.Images.Media.DISPLAY_NAME, "15code-image-" + System.currentTimeMillis() + ".png");
+            values.put(MediaStore.Images.Media.MIME_TYPE, "image/png");
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/15code");
+            Uri uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+            if (uri == null) throw new IOException("无法创建图片文件");
+            try (OutputStream out = getContentResolver().openOutputStream(uri)) { if (out == null) throw new IOException("无法写入图片"); out.write(bytes); }
+            toast("图片已保存到系统相册");
+        } catch (Exception e) { toast("保存失败：" + e.getMessage()); }
     }
 
     private void updateAttachmentPreview() {
