@@ -32,6 +32,12 @@ grep -q 'IMAGE_EDITS = "https://cli.15code.com/v1/images/edits"' "$MAIN" \
   || fail "Android image editing must use cli.15code.com Images API"
 grep -q 'body.put("model", "gpt-image-2")' "$MAIN" \
   || fail "Android image generation must use the public gpt-image-2 model"
+grep -Fq 'new String[]{"横版 1536x1024", "方图 1024x1024", "竖版 1024x1536"}' "$MAIN" \
+  || fail "Android image generation must expose presentation-friendly image sizes"
+grep -q 'return quality.getSelectedItemPosition() == 1 ? "high" : "medium";' "$MAIN" \
+  || fail "Android image generation must expose standard and high quality"
+grep -q 'return index == 1 ? "jpeg" : index == 2 ? "webp" : "png";' "$MAIN" \
+  || fail "Android image generation must preserve output format selection"
 grep -q '当前账号尚未开通图片权限' "$MAIN" \
   || fail "Android image UI must preserve the server permission boundary"
 grep -q 'body.put("searchMode", "auto")' "$MAIN" \

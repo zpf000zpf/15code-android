@@ -34,8 +34,10 @@ import android.widget.PopupMenu;
 import android.widget.PopupWindow;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
+import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.widget.ArrayAdapter;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -445,40 +447,86 @@ public class MainActivity extends Activity {
         input.setHint(selectedImageDataUrl == null ? "描述要生成的图片" : "描述要生成的图片，或修改已附加图片");
         input.setMinLines(3);
         input.setGravity(Gravity.TOP | Gravity.START);
-        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("图片生成与编辑").setView(input)
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        int padding = dp(16);
+        panel.setPadding(padding, 0, padding, 0);
+        panel.addView(input, new LinearLayout.LayoutParams(-1, -2));
+
+        Spinner size = new Spinner(this);
+        Spinner quality = new Spinner(this);
+        Spinner format = new Spinner(this);
+        size.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
+                new String[]{"横版 1536x1024", "方图 1024x1024", "竖版 1024x1536"}));
+        quality.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
+                new String[]{"标准质量", "高清质量"}));
+        format.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
+                new String[]{"PNG", "JPEG", "WebP"}));
+        panel.addView(labelledImageOption("尺寸", size));
+        panel.addView(labelledImageOption("质量", quality));
+        panel.addView(labelledImageOption("格式", format));
+
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("图片生成与编辑").setView(panel)
                 .setNegativeButton("取消", null).setPositiveButton("生成", null).create();
         dialog.setOnShowListener(ignored -> {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
                 String prompt = input.getText().toString().trim();
                 if (prompt.isEmpty()) { input.setError("请输入提示词"); return; }
                 dialog.dismiss();
-                requestImage(prompt, false);
+                requestImage(prompt, false, imageSizeValue(size), imageQualityValue(quality), imageFormatValue(format));
             });
             if (selectedImageDataUrl != null) dialog.setButton(AlertDialog.BUTTON_NEUTRAL, "修改已附加图片", (d, which) -> {
                 String prompt = input.getText().toString().trim();
                 if (prompt.isEmpty()) { toast("请输入修改要求"); return; }
-                requestImage(prompt, true);
+                requestImage(prompt, true, imageSizeValue(size), imageQualityValue(quality), imageFormatValue(format));
             });
         });
         dialog.show();
     }
 
-    private void requestImage(String prompt, boolean edit) {
+    private LinearLayout labelledImageOption(String label, Spinner control) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title = new TextView(this);
+        title.setText(label);
+        title.setTextSize(13);
+        title.setTextColor(0xFF475569);
+        row.addView(title, new LinearLayout.LayoutParams(dp(48), -2));
+        row.addView(control, new LinearLayout.LayoutParams(0, -2, 1));
+        return row;
+    }
+
+    private String imageSizeValue(Spinner size) {
+        int index = size.getSelectedItemPosition();
+        return index == 1 ? "1024x1024" : index == 2 ? "1024x1536" : "1536x1024";
+    }
+
+    private String imageQualityValue(Spinner quality) {
+        return quality.getSelectedItemPosition() == 1 ? "high" : "medium";
+    }
+
+    private String imageFormatValue(Spinner format) {
+        int index = format.getSelectedItemPosition();
+        return index == 1 ? "jpeg" : index == 2 ? "webp" : "png";
+    }
+
+    private void requestImage(String prompt, boolean edit, String size, String quality, String format) {
         setBusy(true, edit ? "正在修改图片..." : "正在生成图片...");
         storageExecutor.execute(() -> {
             try {
                 JSONObject result;
-                if (edit) result = postImageEdit(prompt, selectedImageDataUrl);
+                if (edit) result = postImageEdit(prompt, selectedImageDataUrl, size, quality, format);
                 else {
                     JSONObject body = new JSONObject();
                     body.put("model", "gpt-image-2"); body.put("prompt", prompt);
-                    body.put("size", "1024x1024"); body.put("quality", "low"); body.put("output_format", "png");
+                    body.put("size", size); body.put("quality", quality); body.put("output_format", format);
                     result = postJson(IMAGE_GENERATIONS, body, goKey, false);
                 }
                 JSONArray data = result.optJSONArray("data");
                 String encoded = data == null || data.length() == 0 ? "" : data.optJSONObject(0).optString("b64_json", "");
                 if (encoded.isEmpty()) throw new Exception("图片服务没有返回图片数据");
-                String dataUrl = "data:image/png;base64," + encoded;
+                String mime = "jpeg".equals(format) ? "image/jpeg" : "image/" + format;
+                String dataUrl = "data:" + mime + ";base64," + encoded;
                 uiHandler.post(() -> showImageResult(dataUrl));
             } catch (Exception e) {
                 String message = e.getMessage() != null && e.getMessage().contains("HTTP 403") ? "当前账号尚未开通图片权限" : friendlyError(e);
@@ -487,7 +535,7 @@ public class MainActivity extends Activity {
         });
     }
 
-    private JSONObject postImageEdit(String prompt, String dataUrl) throws Exception {
+    private JSONObject postImageEdit(String prompt, String dataUrl, String size, String quality, String format) throws Exception {
         if (dataUrl == null) throw new Exception("请先附加要修改的图片");
         int comma = dataUrl.indexOf(',');
         byte[] image = Base64.decode(comma >= 0 ? dataUrl.substring(comma + 1) : dataUrl, Base64.DEFAULT);
@@ -498,8 +546,8 @@ public class MainActivity extends Activity {
         conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
         try (OutputStream out = conn.getOutputStream()) {
             writeMultipartField(out, boundary, "model", "gpt-image-2"); writeMultipartField(out, boundary, "prompt", prompt);
-            writeMultipartField(out, boundary, "size", "1024x1024"); writeMultipartField(out, boundary, "quality", "low");
-            writeMultipartField(out, boundary, "output_format", "png");
+            writeMultipartField(out, boundary, "size", size); writeMultipartField(out, boundary, "quality", quality);
+            writeMultipartField(out, boundary, "output_format", format);
             out.write(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"image\"; filename=\"input.png\"\r\nContent-Type: image/png\r\n\r\n").getBytes(StandardCharsets.UTF_8));
             out.write(image); out.write(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
         }
@@ -519,14 +567,21 @@ public class MainActivity extends Activity {
         preview.setImageBitmap(BitmapFactory.decodeByteArray(bytes, 0, bytes.length));
         new AlertDialog.Builder(this).setTitle("图片已完成").setView(preview).setNegativeButton("关闭", null)
                 .setNeutralButton("继续修改", (d, w) -> { selectedImageDataUrl = dataUrl; selectedImageName = "生成图片"; updateAttachmentPreview(); showImageStudioDialog(); })
-                .setPositiveButton("保存", (d, w) -> saveImageToGallery(bytes)).show();
+                .setPositiveButton("保存", (d, w) -> saveImageToGallery(bytes, imageMimeType(dataUrl))).show();
     }
 
-    private void saveImageToGallery(byte[] bytes) {
+    private String imageMimeType(String dataUrl) {
+        if (dataUrl != null && dataUrl.startsWith("data:image/jpeg;")) return "image/jpeg";
+        if (dataUrl != null && dataUrl.startsWith("data:image/webp;")) return "image/webp";
+        return "image/png";
+    }
+
+    private void saveImageToGallery(byte[] bytes, String mimeType) {
         try {
+            String extension = "image/jpeg".equals(mimeType) ? "jpg" : "image/webp".equals(mimeType) ? "webp" : "png";
             ContentValues values = new ContentValues();
-            values.put(MediaStore.Images.Media.DISPLAY_NAME, "15code-image-" + System.currentTimeMillis() + ".png");
-            values.put(MediaStore.Images.Media.MIME_TYPE, "image/png");
+            values.put(MediaStore.Images.Media.DISPLAY_NAME, "15code-image-" + System.currentTimeMillis() + "." + extension);
+            values.put(MediaStore.Images.Media.MIME_TYPE, mimeType);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/15code");
             Uri uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
             if (uri == null) throw new IOException("无法创建图片文件");
