@@ -80,6 +80,10 @@ grep -q 'forceUpgradeBelow' "$MAIN" \
   || fail "Catalog minimum-version policy must be enforced"
 grep -q 'PopupMenu menu = new PopupMenu' "$MAIN" \
   || fail "header actions must use the compact overflow menu"
+grep -q 'imageStudioButton.setText("图片")' "$MAIN" \
+  || fail "image generation must have a direct signed-in header entry"
+grep -q 'imageStudioButton.setContentDescription("图片生成与编辑")' "$MAIN" \
+  || fail "image generation entry must remain accessible"
 grep -q 'attachmentPreview.setVisibility(View.VISIBLE)' "$MAIN" \
   || fail "image attachments must show a visible preview"
 

@@ -115,6 +115,7 @@ public class MainActivity extends Activity {
     private TextView statusText;
     private TextView accountText;
     private Button newChatButton;
+    private Button imageStudioButton;
     private Button menuButton;
     private Button searchButton;
     private Button attachButton;
@@ -229,6 +230,20 @@ public class MainActivity extends Activity {
         newChatButton.setContentDescription("新建对话");
         newChatButton.setOnClickListener(v -> newChat());
         header.addView(newChatButton, new LinearLayout.LayoutParams(dp(52), dp(42)));
+
+        imageStudioButton = new Button(this);
+        imageStudioButton.setText("图片");
+        imageStudioButton.setAllCaps(false);
+        imageStudioButton.setTextSize(13);
+        imageStudioButton.setContentDescription("图片生成与编辑");
+        imageStudioButton.setOnClickListener(v -> {
+            if (sessionToken == null || goKey == null) {
+                toast("请先登录后使用图片生成");
+                return;
+            }
+            showImageStudioDialog();
+        });
+        header.addView(imageStudioButton, new LinearLayout.LayoutParams(dp(62), dp(42)));
 
         menuButton = new Button(this);
         menuButton.setText("⋮");
