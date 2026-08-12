@@ -535,7 +535,7 @@ public class MainActivity extends Activity {
                     JSONObject body = new JSONObject();
                     body.put("model", "gpt-image-2"); body.put("prompt", prompt);
                     body.put("size", size); body.put("quality", quality); body.put("output_format", format);
-                    result = postJson(IMAGE_GENERATIONS, body, goKey, false);
+                    result = postJson(IMAGE_GENERATIONS, body, goKey, false, "img-" + UUID.randomUUID());
                 }
                 JSONArray data = result.optJSONArray("data");
                 String encoded = data == null || data.length() == 0 ? "" : data.optJSONObject(0).optString("b64_json", "");
@@ -559,6 +559,7 @@ public class MainActivity extends Activity {
         conn.setConnectTimeout(20000); conn.setReadTimeout(180000); conn.setRequestMethod("POST"); conn.setDoOutput(true);
         conn.setRequestProperty("Authorization", "Bearer " + goKey);
         conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
+        conn.setRequestProperty("X-Client-Request-Id", "img-edit-" + UUID.randomUUID());
         try (OutputStream out = conn.getOutputStream()) {
             writeMultipartField(out, boundary, "model", "gpt-image-2"); writeMultipartField(out, boundary, "prompt", prompt);
             writeMultipartField(out, boundary, "size", size); writeMultipartField(out, boundary, "quality", quality);
@@ -1237,10 +1238,18 @@ public class MainActivity extends Activity {
     }
 
     private JSONObject postJson(String url, JSONObject body, String bearer, boolean loginMode) throws Exception {
-        return requestJson("POST", url, body, bearer, loginMode);
+        return requestJson("POST", url, body, bearer, loginMode, null);
+    }
+
+    private JSONObject postJson(String url, JSONObject body, String bearer, boolean loginMode, String clientRequestId) throws Exception {
+        return requestJson("POST", url, body, bearer, loginMode, clientRequestId);
     }
 
     private JSONObject requestJson(String method, String urlText, JSONObject body, String bearer, boolean loginMode) throws Exception {
+        return requestJson(method, urlText, body, bearer, loginMode, null);
+    }
+
+    private JSONObject requestJson(String method, String urlText, JSONObject body, String bearer, boolean loginMode, String clientRequestId) throws Exception {
         HttpURLConnection conn = (HttpURLConnection) new URL(urlText).openConnection();
         conn.setConnectTimeout(20000);
         conn.setReadTimeout(180000);
@@ -1250,6 +1259,7 @@ public class MainActivity extends Activity {
         conn.setRequestProperty("User-Agent", "15code-android-native/" + APP_VERSION);
         if (loginMode) conn.setRequestProperty("X-Auth-Mode", "bearer");
         if (bearer != null && !bearer.isEmpty()) conn.setRequestProperty("Authorization", "Bearer " + bearer);
+        if (clientRequestId != null && !clientRequestId.isEmpty()) conn.setRequestProperty("X-Client-Request-Id", clientRequestId);
         if (body != null) {
             conn.setDoOutput(true);
             byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
@@ -1277,6 +1287,7 @@ public class MainActivity extends Activity {
         loginPanel.setVisibility(View.VISIBLE);
         chatPanel.setVisibility(View.GONE);
         newChatButton.setVisibility(View.GONE);
+        imageStudioButton.setVisibility(View.GONE);
         menuButton.setVisibility(View.VISIBLE);
         statusText.setText("请登录");
     }
@@ -1285,6 +1296,7 @@ public class MainActivity extends Activity {
         loginPanel.setVisibility(View.GONE);
         chatPanel.setVisibility(View.VISIBLE);
         newChatButton.setVisibility(View.VISIBLE);
+        imageStudioButton.setVisibility(View.VISIBLE);
         menuButton.setVisibility(View.VISIBLE);
         accountText.setText((accountEmail == null || accountEmail.isEmpty() ? "已登录" : accountEmail)
                 + " · 余额 " + String.format("%.4f", credits));

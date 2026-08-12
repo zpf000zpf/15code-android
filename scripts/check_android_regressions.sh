@@ -40,6 +40,10 @@ grep -q 'return index == 1 ? "jpeg" : index == 2 ? "webp" : "png";' "$MAIN" \
   || fail "Android image generation must preserve output format selection"
 grep -q '当前账号尚未开通图片权限' "$MAIN" \
   || fail "Android image UI must preserve the server permission boundary"
+grep -Fq 'postJson(IMAGE_GENERATIONS, body, goKey, false, "img-" + UUID.randomUUID())' "$MAIN" \
+  || fail "Android image generation must send an idempotency request ID"
+grep -q '"X-Client-Request-Id", "img-edit-" + UUID.randomUUID()' "$MAIN" \
+  || fail "Android image editing must send an idempotency request ID"
 grep -q 'body.put("searchMode", "auto")' "$MAIN" \
   || fail "Android chat must enable automatic search mode"
 grep -q 'Authorization", "Bearer " + sessionToken' "$MAIN" \
