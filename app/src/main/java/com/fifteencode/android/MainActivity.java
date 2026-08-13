@@ -64,6 +64,7 @@ public class MainActivity extends Activity {
     private static final String LLM = "https://cli.15code.com/v1/chat/completions";
     private static final String IMAGE_GENERATIONS = "https://cli.15code.com/v1/images/generations";
     private static final String IMAGE_EDITS = "https://cli.15code.com/v1/images/edits";
+    private static final String IMAGE_PRICING = PLATFORM + "/api/image-pricing";
     private static final String SEARCH_CHAT = PLATFORM + "/api/search-chat";
     private static final String ANDROID_RELEASES = "https://github.com/zpf000zpf/15code-android/releases";
     private static final String ANDROID_LATEST_RELEASE = "https://api.github.com/repos/zpf000zpf/15code-android/releases/latest";
@@ -480,6 +481,12 @@ public class MainActivity extends Activity {
         panel.addView(labelledImageOption("尺寸", size));
         panel.addView(labelledImageOption("质量", quality));
         panel.addView(labelledImageOption("格式", format));
+        TextView pricing = new TextView(this);
+        pricing.setText("正在读取图片价格说明…");
+        pricing.setTextSize(12);
+        pricing.setTextColor(0xFF64748B);
+        pricing.setPadding(0, dp(10), 0, 0);
+        panel.addView(pricing, new LinearLayout.LayoutParams(-1, -2));
 
         AlertDialog dialog = new AlertDialog.Builder(this).setTitle("图片生成与编辑").setView(panel)
                 .setNegativeButton("取消", null).setPositiveButton("生成", null).create();
@@ -497,6 +504,36 @@ public class MainActivity extends Activity {
             });
         });
         dialog.show();
+        loadImagePricing(pricing);
+    }
+
+    // 价格快照只用平台 session 获取；图片 API Key 始终仅用于图片请求。
+    // 客户端仅作提交前说明，最终金额仍由服务端预约和结算链路决定。
+    private void loadImagePricing(TextView target) {
+        storageExecutor.execute(() -> {
+            String display = "图片价格暂不可读取；实际扣费仍由服务端统一结算。";
+            try {
+                JSONObject pricing = getJson(IMAGE_PRICING, sessionToken);
+                JSONArray snapshots = pricing.optJSONArray("snapshots");
+                JSONObject selected = null;
+                if (snapshots != null) {
+                    for (int i = 0; i < snapshots.length(); i++) {
+                        JSONObject row = snapshots.optJSONObject(i);
+                        if (row != null && "gpt-image-2".equals(row.optString("modelId"))
+                                && "generation".equals(row.optString("operation"))) { selected = row; break; }
+                        if (selected == null && row != null && "gpt-image-2".equals(row.optString("modelId"))) selected = row;
+                    }
+                }
+                if (selected != null) {
+                    double max = selected.optDouble("maxReservationCredits", 0) / 1_000_000d;
+                    String time = selected.optString("effectiveAt", selected.optString("fetchedAt", "未知"));
+                    display = String.format(java.util.Locale.US,
+                            "价格来源：OpenRouter\n快照时间：%s\n单次最大预约：%.4f USD\n实际扣费以服务端结算为准。", time, max);
+                }
+            } catch (Exception ignored) { }
+            final String text = display;
+            uiHandler.post(() -> target.setText(text));
+        });
     }
 
     private LinearLayout labelledImageOption(String label, Spinner control) {
