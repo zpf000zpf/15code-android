@@ -5,6 +5,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MAIN="$ROOT/app/src/main/java/com/fifteencode/android/MainActivity.java"
 GRADLE="$ROOT/app/build.gradle"
 NOTES="$ROOT/docs/android-regression-notes.md"
+SMOKE="$ROOT/scripts/smoke_android_composer.sh"
+REGRESSION_WORKFLOW="$ROOT/.github/workflows/android-regression.yml"
 
 fail() {
   echo "REGRESSION: $*" >&2
@@ -43,10 +45,14 @@ grep -q 'return index == 1 ? "jpeg" : index == 2 ? "webp" : "png";' "$MAIN" \
   || fail "Android image generation must preserve output format selection"
 grep -q '当前账号尚未开通图片权限' "$MAIN" \
   || fail "Android image UI must preserve the server permission boundary"
-grep -Fq 'postJson(IMAGE_GENERATIONS, body, goKey, false, "img-" + UUID.randomUUID())' "$MAIN" \
-  || fail "Android image generation must send an idempotency request ID"
-grep -q '"X-Client-Request-Id", "img-edit-" + UUID.randomUUID()' "$MAIN" \
-  || fail "Android image editing must send an idempotency request ID"
+grep -Fq 'postJson(IMAGE_GENERATIONS, body, goKey, false, requestId)' "$MAIN" \
+  || fail "Android image generation must send a stable idempotency request ID"
+grep -q '"X-Client-Request-Id", requestId' "$MAIN" \
+  || fail "Android image editing must send a stable idempotency request ID"
+grep -q 'class ImageVersionEntity' "$ROOT/app/src/main/java/com/fifteencode/android/ImageVersionEntity.java" \
+  || fail "Android image conversations must persist image versions"
+grep -q 'addMigrations(MIGRATION_1_2, MIGRATION_2_3)' "$ROOT/app/src/main/java/com/fifteencode/android/ChatDatabase.java" \
+  || fail "Android must preserve existing chat data while evolving image versions"
 grep -q 'body.put("searchMode", "auto")' "$MAIN" \
   || fail "Android chat must enable automatic search mode"
 grep -q 'Authorization", "Bearer " + sessionToken' "$MAIN" \
@@ -93,31 +99,120 @@ grep -q '在当前对话中生成/修改图片' "$MAIN" \
   || fail "image generation must stay in the current conversation"
 grep -q 'messageList.addView(card, lp)' "$MAIN" \
   || fail "generated images must render in the active conversation"
+grep -q 'listRecentImageVersions(conversationId, MAX_HISTORY_IMAGE_VERSIONS)' "$MAIN" \
+  || fail "reopened conversations must restore recent generated-image cards"
+grep -q 'TimelineEntry.forImage(version' "$MAIN" \
+  || fail "generated images must merge into the persisted conversation timeline"
+grep -q 'msg.put("createdAt", row.createdAt)' "$MAIN" \
+  || fail "restored messages must retain stable timeline timestamps"
+grep -q 'item.optLong("createdAt", 0)' "$MAIN" \
+  || fail "chat saves must preserve message timestamps instead of rewriting order"
+grep -q 'parentVersionId = edit ? selectedImageVersionId : null' "$MAIN" \
+  || fail "iterative image edits must persist their direct parent version"
+grep -q 'selectedImageVersionId = null' "$MAIN" \
+  || fail "album images and cleared attachments must not retain a generated-image parent"
+grep -q 'selectedImageVersionId = version.id' "$MAIN" \
+  || fail "continuing an image edit must select the generated parent version"
+grep -q 'decodeSampledBitmap' "$MAIN" \
+  || fail "large generated images must use sampled previews"
+grep -q 'imagePreviewExecutor.execute' "$MAIN" \
+  || fail "image preview and file preparation must stay off the main thread"
+grep -q 'conn.setChunkedStreamingMode(8192)' "$MAIN" \
+  || fail "image edits must stream multipart files instead of buffering the whole request"
 grep -q 'attachmentPreview.setVisibility(View.VISIBLE)' "$MAIN" \
   || fail "image attachments must show a visible preview"
-
-grep -q 'promptInput.setOnClickListener(v -> openComposerDialog())' "$MAIN" \
-  || fail "bottom composer input must open the dialog composer"
-grep -q 'composer.setOnClickListener(v -> openComposerDialog())' "$MAIN" \
-  || fail "composer tap must open the dialog composer"
-grep -q 'PopupWindow popup = new PopupWindow' "$MAIN" \
-  || fail "composer must use a bottom input sheet"
-grep -q 'popup.showAtLocation(root, Gravity.BOTTOM' "$MAIN" \
-  || fail "composer sheet must appear from the bottom"
-grep -q 'chat-composer-sheet-input' "$MAIN" \
-  || fail "bottom sheet composer must expose a stable content description"
+grep -q 'persistCurrentImageSelection();' "$MAIN" \
+  || fail "pending image attachments must survive process recreation"
+grep -q 'private String selectedImageConversationId;' "$MAIN" \
+  || fail "pending image attachments must remain scoped to their conversation"
+grep -q 'File attachment = persistAlbumAttachment(conversationId, bytes, mime);' "$MAIN" \
+  || fail "album attachments must be copied into private app storage"
+grep -A3 -q 'private void logout() {' "$MAIN" \
+  || fail "logout must remain explicit"
+if ! sed -n '/private void logout() {/,/securePrefs.remove("sessionToken")/p' "$MAIN" \
+    | grep -q 'clearSelectedImageState();'; then
+  fail "logout must clear pending attachments and owned private files"
+fi
 
 grep -q 'ApplicationInfo.FLAG_DEBUGGABLE' "$MAIN" \
   || fail "smoke test gate must use ApplicationInfo.FLAG_DEBUGGABLE"
 grep -q 'chat-composer-input' "$MAIN" \
   || fail "composer must expose a stable content description for UI tests"
+grep -q 'promptInput.setFocusable(true)' "$MAIN" \
+  || fail "bottom composer must remain a native focusable EditText"
+grep -q 'promptInput.setFocusableInTouchMode(true)' "$MAIN" \
+  || fail "bottom composer must accept touch focus natively"
+grep -q 'promptInput.setCursorVisible(true)' "$MAIN" \
+  || fail "bottom composer must expose its native text cursor"
+grep -q 'promptInput.addTextChangedListener(new TextWatcher()' "$MAIN" \
+  || fail "bottom composer drafts must be observed continuously"
+grep -q 'DRAFT_SAVE_DELAY_MS = 350' "$MAIN" \
+  || fail "draft writes must stay debounced"
+grep -q 'flushCurrentDraft();' "$MAIN" \
+  || fail "drafts must flush on lifecycle and conversation boundaries"
+grep -q 'restorePromptDraft(storedDraft)' "$MAIN" \
+  || fail "saved Room drafts must restore into the inline composer"
+grep -q 'android:windowSoftInputMode="adjustResize"' "$ROOT/app/src/main/AndroidManifest.xml" \
+  || fail "the Android window must own keyboard resize behavior"
+grep -q 'android:windowOptOutEdgeToEdgeEnforcement">true' "$ROOT/app/src/main/res/values-v35/styles.xml" \
+  || fail "Android 15 must preserve system-managed non-edge-to-edge IME resizing"
+grep -q 'replaceConversationMessages' "$ROOT/app/src/main/java/com/fifteencode/android/ChatDao.java" \
+  || fail "chat history replacement must be transactional"
+grep -q 'conversation.draft = existing.draft' "$ROOT/app/src/main/java/com/fifteencode/android/ChatDao.java" \
+  || fail "chat-history writes must not overwrite a newer composer draft"
+grep -Fq 'prefs.edit().putString(draftFallbackKey(currentConversationId), currentDraft).apply()' "$MAIN" \
+  || fail "each text change must leave a process-death draft fallback"
+grep -q '!currentConversationId.equals(promptDraftConversationId)' "$MAIN" \
+  || fail "an unloaded blank composer must never overwrite a stored conversation draft"
+grep -q 'boolean allowConversationChanges = !streaming && !historyLoadStarted' "$MAIN" \
+  || fail "conversation switching must stay disabled while loading or streaming owns message state"
+grep -q '&& !imageAttachmentLoading && !imageRequestRunning;' "$MAIN" \
+  || fail "conversation switching must stay disabled while image state belongs to the active conversation"
+grep -q 'if (historyLoadStarted) {' "$MAIN" \
+  || fail "sending must wait for asynchronous conversation history to finish loading"
+grep -q 'final String requestModel = selectedModel;' "$MAIN" \
+  || fail "each stream must keep the model selected when the request started"
+grep -q 'if (!streaming || stopRequested) return;' "$MAIN" \
+  || fail "repeated stop taps must not reopen the streaming state"
+grep -q 'sendButton.setText(stopRequested ? "停止中" : "停止")' "$MAIN" \
+  || fail "the send button must stay locked until the stopped request exits"
+grep -q 'if (stopRequested) {' "$MAIN" \
+  || fail "a user-cancelled stream must never fall through to non-streaming retry"
+grep -q 'imageExecutor.execute' "$MAIN" \
+  || fail "long image requests must not block Room draft persistence"
+grep -q 'smokeStreaming' "$MAIN" \
+  || fail "debug composer smoke mode must cover streaming input"
+grep -q 'runComposerStreamingSmokeFrame' "$MAIN" \
+  || fail "streaming smoke mode must exercise repeated message-list updates"
+grep -q 'assert_focused_and_keyboard_visible' "$SMOKE" \
+  || fail "device smoke test must verify first-tap focus and IME visibility"
+grep -q 'adjustResize did not move the composer' "$SMOKE" \
+  || fail "device smoke test must verify the composer remains above the IME"
+grep -q 'assert_text "\$STREAM_TEXT"' "$SMOKE" \
+  || fail "device smoke test must verify typing during streaming"
+grep -q 'android-emulator-runner@v2' "$REGRESSION_WORKFLOW" \
+  || fail "CI must run the native composer smoke test on Android"
+grep -Fq 'api-level: [28, 35]' "$REGRESSION_WORKFLOW" \
+  || fail "CI composer smoke must cover both legacy and Android 15 IME behavior"
 
-grep -q 'composer.setTranslationY(-keyboardHeight)' "$MAIN" \
-  || fail "keyboard avoidance must move composer above keyboard"
-grep -q 'getWindow().getDecorView().getWindowVisibleDisplayFrame' "$MAIN" \
-  || fail "keyboard height must be based on visible window bounds"
+for forbidden in \
+  'openComposerDialog' \
+  'PopupWindow' \
+  'chat-composer-sheet-input' \
+  'promptInput.setOnClickListener' \
+  'promptInput.setOnTouchListener' \
+  'promptInput.setOnFocusChangeListener' \
+  'composer.setOnClickListener' \
+  'promptInput.setEnabled' \
+  'showSoftInput' \
+  'composer.setTranslationY' \
+  'getWindowVisibleDisplayFrame'; do
+  if grep -Fq "$forbidden" "$MAIN"; then
+    fail "inline composer reintroduced forbidden input workaround: $forbidden"
+  fi
+done
 
-grep -q 'First-tap handling must return `false`' "$NOTES" \
-  || fail "regression notes must document the non-consuming touch requirement"
+grep -q 'Only `adjustResize` owns IME layout' "$NOTES" \
+  || fail "regression notes must document the single keyboard-layout owner"
 
 echo "Android regression checks passed"

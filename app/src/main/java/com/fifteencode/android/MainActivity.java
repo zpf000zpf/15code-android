@@ -3,13 +3,11 @@ package com.fifteencode.android;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ContentValues;
-import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
+import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
-import android.graphics.drawable.ColorDrawable;
-import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -19,19 +17,18 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.MediaStore;
+import android.text.Editable;
 import android.text.InputType;
+import android.text.TextWatcher;
 import android.util.Base64;
 import android.view.Gravity;
 import android.view.View;
-import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
-import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.PopupMenu;
-import android.widget.PopupWindow;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.Spinner;
@@ -44,6 +41,9 @@ import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -53,6 +53,8 @@ import java.net.SocketException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
@@ -73,23 +75,46 @@ public class MainActivity extends Activity {
     private static final String PREFERRED_MODEL = "qwen3.6";
     private static final int PICK_IMAGE_REQUEST = 7301;
     private static final int MAX_HISTORY_MESSAGES = 20;
+    private static final int MAX_HISTORY_IMAGE_VERSIONS = 20;
     private static final int MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+    private static final int MAX_GENERATED_IMAGE_BYTES = 16 * 1024 * 1024;
+    private static final int CARD_PREVIEW_MAX_DIMENSION = 720;
+    private static final int ATTACHMENT_PREVIEW_MAX_DIMENSION = 256;
     private static final long STREAM_RENDER_INTERVAL_MS = 100;
+    private static final long DRAFT_SAVE_DELAY_MS = 350;
 
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
     private SecurePreferences securePrefs;
     private ChatDao chatDao;
     private final ExecutorService storageExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService imageExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService imagePreviewExecutor = Executors.newSingleThreadExecutor();
     private String currentConversationId;
-    private String currentDraft = "";
+    private volatile String currentDraft = "";
+    private String promptDraftConversationId;
+    private Runnable pendingDraftSave;
+    private boolean restoringDraft;
+    private long draftEditRevision;
+    private long conversationLoadGeneration;
+    private boolean composerSmokeMode;
     private volatile boolean historyLoadStarted;
     private String sessionToken;
     private String goKey;
     private String selectedModel;
     private String accountEmail;
     private String selectedImageDataUrl;
+    private String selectedImageLocalPath;
+    private String selectedImageMimeType;
     private String selectedImageName;
+    private String selectedImageVersionId;
+    private String selectedImageConversationId;
+    private boolean selectedImageOwnedFile;
+    private Bitmap selectedImagePreviewBitmap;
+    private volatile long imageSelectionGeneration;
+    private long lastTimelineTimestamp;
+    private volatile boolean imageRequestRunning;
+    private volatile boolean imageAttachmentLoading;
     private boolean forceWebSearch;
     private double credits;
     private volatile boolean streaming;
@@ -130,17 +155,23 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         securePrefs = new SecurePreferences(this);
         migratePlaintextCredentials();
         sessionToken = securePrefs.get("sessionToken");
         goKey = securePrefs.get("goKey");
         chatDao = ChatDatabase.get(this).chatDao();
-        currentConversationId = prefs.getString("currentConversationId", "");
-        if (currentConversationId == null || currentConversationId.isEmpty()) {
-            currentConversationId = UUID.randomUUID().toString();
-            prefs.edit().putString("currentConversationId", currentConversationId).apply();
+        composerSmokeMode = isDebugBuild() && getIntent().getBooleanExtra("smokeComposer", false);
+        if (composerSmokeMode) {
+            String smokeId = getIntent().getStringExtra("smokeConversationId");
+            currentConversationId = smokeId != null && smokeId.matches("[A-Za-z0-9._-]{1,80}")
+                    ? "smoke-" + smokeId : "smoke-composer";
+        } else {
+            currentConversationId = prefs.getString("currentConversationId", "");
+            if (currentConversationId == null || currentConversationId.isEmpty()) {
+                currentConversationId = UUID.randomUUID().toString();
+                prefs.edit().putString("currentConversationId", currentConversationId).apply();
+            }
         }
         selectedModel = prefs.getString("model", null);
         accountEmail = prefs.getString("accountEmail", "");
@@ -149,7 +180,7 @@ public class MainActivity extends Activity {
         loadCachedModels();
         if (selectedModel == null || selectedModel.isEmpty()) selectedModel = PREFERRED_MODEL;
         buildUi();
-        if (isDebugBuild() && getIntent().getBooleanExtra("smokeComposer", false)) {
+        if (composerSmokeMode) {
             showSmokeComposer();
         } else {
             if (sessionToken != null) restoreSession();
@@ -158,8 +189,19 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onPause() {
+        flushCurrentDraft();
+        persistCurrentImageSelection();
+        super.onPause();
+    }
+
+    @Override
     protected void onDestroy() {
+        flushCurrentDraft();
+        if (pendingDraftSave != null) uiHandler.removeCallbacks(pendingDraftSave);
         storageExecutor.shutdown();
+        imageExecutor.shutdownNow();
+        imagePreviewExecutor.shutdownNow();
         super.onDestroy();
     }
 
@@ -177,28 +219,24 @@ public class MainActivity extends Activity {
         if (requestCode != PICK_IMAGE_REQUEST || resultCode != RESULT_OK || data == null || data.getData() == null) {
             return;
         }
-        try {
-            Uri uri = data.getData();
-            String mime = getContentResolver().getType(uri);
-            if (mime == null || !mime.startsWith("image/")) mime = "image/jpeg";
-            byte[] bytes = readLimitedBytes(uri, MAX_IMAGE_BYTES);
-            selectedImageDataUrl = "data:" + mime + ";base64," + Base64.encodeToString(bytes, Base64.NO_WRAP);
-            selectedImageName = "图片";
-            updateAttachmentPreview();
-            boolean switched = selectVisionModelForImage();
-            Model imageModel = findModel(selectedModel);
-            if (imageModel == null || !imageModel.isAvailable() || !imageModel.vision) {
-                throw new Exception("当前目录没有可用的图片模型");
+        Uri uri = data.getData();
+        final String conversationId = currentConversationId;
+        String detectedMime = getContentResolver().getType(uri);
+        final String mime = detectedMime != null && detectedMime.startsWith("image/")
+                ? detectedMime : "image/jpeg";
+        final long selectionGeneration = beginImageSelection();
+        setBusy(true, "正在读取图片...");
+        imagePreviewExecutor.execute(() -> {
+            try {
+                byte[] bytes = readLimitedBytes(uri, MAX_IMAGE_BYTES);
+                Bitmap preview = decodeSampledBitmap(bytes, ATTACHMENT_PREVIEW_MAX_DIMENSION);
+                File attachment = persistAlbumAttachment(conversationId, bytes, mime);
+                uiHandler.post(() -> finishAlbumImageSelection(selectionGeneration,
+                        conversationId, attachment.getAbsolutePath(), mime, preview));
+            } catch (Exception e) {
+                uiHandler.post(() -> failImageSelection(selectionGeneration, e));
             }
-            statusText.setText(switched
-                    ? "已附加图片 · 已切换到 " + modelLabel(selectedModel)
-                    : "已附加图片 · 当前模型 " + modelLabel(selectedModel));
-        } catch (Exception e) {
-            selectedImageDataUrl = null;
-            selectedImageName = null;
-            updateAttachmentPreview();
-            toast(e.getMessage());
-        }
+        });
     }
 
     private void buildUi() {
@@ -376,19 +414,29 @@ public class MainActivity extends Activity {
         promptInput.setSingleLine(false);
         promptInput.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
         promptInput.setPadding(dp(14), 0, dp(14), 0);
-        promptInput.setFocusable(false);
-        promptInput.setFocusableInTouchMode(false);
-        promptInput.setCursorVisible(false);
+        promptInput.setFocusable(true);
+        promptInput.setFocusableInTouchMode(true);
+        promptInput.setCursorVisible(true);
         promptInput.setInputType(InputType.TYPE_CLASS_TEXT
                 | InputType.TYPE_TEXT_FLAG_MULTI_LINE
                 | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
         promptInput.setImeOptions(EditorInfo.IME_FLAG_NO_EXTRACT_UI);
         promptInput.setBackground(makeBg(0xFFFFFFFF, 0xFFCBD5E1, dp(18)));
-        promptInput.setOnClickListener(v -> openComposerDialog());
+        promptInput.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override public void afterTextChanged(Editable editable) {
+                if (restoringDraft) return;
+                currentDraft = editable.toString();
+                promptDraftConversationId = currentConversationId;
+                draftEditRevision++;
+                prefs.edit().putString(draftFallbackKey(currentConversationId), currentDraft).apply();
+                scheduleDraftSave(currentConversationId, currentDraft);
+            }
+        });
         LinearLayout.LayoutParams inputLp = new LinearLayout.LayoutParams(0, dp(56), 1);
         inputLp.setMargins(0, 0, dp(8), 0);
         composer.addView(promptInput, inputLp);
-        composer.setOnClickListener(v -> openComposerDialog());
 
         searchButton = new Button(this);
         searchButton.setText("联网");
@@ -424,7 +472,6 @@ public class MainActivity extends Activity {
             else sendMessage();
         });
         composer.addView(sendButton, new LinearLayout.LayoutParams(dp(76), dp(56)));
-        installKeyboardAvoidance();
     }
 
     private void showHeaderMenu(View anchor) {
@@ -455,7 +502,7 @@ public class MainActivity extends Activity {
 
     private void showImageStudioDialog() {
         EditText input = new EditText(this);
-        input.setHint(selectedImageDataUrl == null ? "描述要生成的图片" : "描述要生成的图片，或修改已附加图片");
+        input.setHint(!hasSelectedImage() ? "描述要生成的图片" : "描述要生成的图片，或修改已附加图片");
         input.setMinLines(3);
         input.setGravity(Gravity.TOP | Gravity.START);
         LinearLayout panel = new LinearLayout(this);
@@ -476,8 +523,13 @@ public class MainActivity extends Activity {
         panel.addView(labelledImageOption("尺寸", size));
         panel.addView(labelledImageOption("质量", quality));
         panel.addView(labelledImageOption("格式", format));
-        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("图片生成与编辑").setView(panel)
-                .setNegativeButton("取消", null).setPositiveButton("生成", null).create();
+        AlertDialog.Builder builder = new AlertDialog.Builder(this)
+                .setTitle("图片生成与编辑")
+                .setView(panel)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("生成", null);
+        if (hasSelectedImage()) builder.setNeutralButton("修改已附加图片", null);
+        AlertDialog dialog = builder.create();
         dialog.setOnShowListener(ignored -> {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
                 String prompt = input.getText().toString().trim();
@@ -485,10 +537,13 @@ public class MainActivity extends Activity {
                 dialog.dismiss();
                 requestImage(prompt, false, imageSizeValue(size), imageQualityValue(quality), imageFormatValue(format));
             });
-            if (selectedImageDataUrl != null) dialog.setButton(AlertDialog.BUTTON_NEUTRAL, "修改已附加图片", (d, which) -> {
+            Button editButton = dialog.getButton(AlertDialog.BUTTON_NEUTRAL);
+            if (editButton != null) editButton.setOnClickListener(v -> {
                 String prompt = input.getText().toString().trim();
-                if (prompt.isEmpty()) { toast("请输入修改要求"); return; }
-                requestImage(prompt, true, imageSizeValue(size), imageQualityValue(quality), imageFormatValue(format));
+                if (prompt.isEmpty()) { input.setError("请输入修改要求"); return; }
+                dialog.dismiss();
+                requestImage(prompt, true, imageSizeValue(size), imageQualityValue(quality),
+                        imageFormatValue(format));
             });
         });
         dialog.show();
@@ -521,47 +576,127 @@ public class MainActivity extends Activity {
     }
 
     private void requestImage(String prompt, boolean edit, String size, String quality, String format) {
-        addBubble("你", (edit ? "修改图片：" : "生成图片：") + prompt, true);
+        if (historyLoadStarted || streaming) {
+            toast("请等待当前对话完成加载或生成");
+            return;
+        }
+        if (imageRequestRunning) {
+            toast("上一张图片还在处理中");
+            return;
+        }
+        if (edit && !hasSelectedImage()) {
+            toast("请先附加要修改的图片");
+            return;
+        }
+        imageRequestRunning = true;
+        updateChatControls();
+        final String versionId = UUID.randomUUID().toString();
+        final String parentVersionId = edit ? selectedImageVersionId : null;
+        final String requestId = (edit ? "img-edit-" : "img-") + UUID.randomUUID();
+        final long createdAt = nextTimelineTimestamp();
+        final String conversationId = currentConversationId;
+        final String inputImageDataUrl = selectedImageDataUrl;
+        final String inputImageLocalPath = selectedImageLocalPath;
+        final String inputImageMimeType = selectedImageMimeType;
+        String promptMessage = (edit ? "修改图片：" : "生成图片：") + prompt;
+        addBubble("你", promptMessage, true);
+        appendTimelineMessage("user", promptMessage, createdAt);
         setBusy(true, edit ? "正在修改图片..." : "正在生成图片...");
-        storageExecutor.execute(() -> {
+        imageExecutor.execute(() -> {
+            ImageVersionEntity version = new ImageVersionEntity(versionId, conversationId,
+                    parentVersionId, edit ? "edit" : "generation", "running", prompt,
+                    null, null, null, size, quality, format, requestId, createdAt, 0);
             try {
+                String title = imageConversationTitle(prompt);
+                chatDao.saveImageVersionWithConversation(version,
+                        new ConversationEntity(conversationId, title, false, false,
+                                createdAt, createdAt, ""));
                 JSONObject result;
-                if (edit) result = postImageEdit(prompt, selectedImageDataUrl, size, quality, format);
+                if (edit) result = postImageEdit(prompt, inputImageDataUrl, inputImageLocalPath,
+                        inputImageMimeType, size, quality, format, requestId);
                 else {
                     JSONObject body = new JSONObject();
                     body.put("model", "gpt-image-2"); body.put("prompt", prompt);
                     body.put("size", size); body.put("quality", quality); body.put("output_format", format);
-                    result = postJson(IMAGE_GENERATIONS, body, goKey, false, "img-" + UUID.randomUUID());
+                    result = postJson(IMAGE_GENERATIONS, body, goKey, false, requestId);
                 }
                 JSONArray data = result.optJSONArray("data");
                 String encoded = data == null || data.length() == 0 ? "" : data.optJSONObject(0).optString("b64_json", "");
                 if (encoded.isEmpty()) throw new Exception("图片服务没有返回图片数据");
                 String mime = "jpeg".equals(format) ? "image/jpeg" : "image/" + format;
-                String dataUrl = "data:" + mime + ";base64," + encoded;
-                uiHandler.post(() -> showImageResult(dataUrl));
+                byte[] bytes = Base64.decode(encoded, Base64.DEFAULT);
+                if (bytes.length > MAX_GENERATED_IMAGE_BYTES) throw new IOException("生成图片文件过大");
+                File imageFile = persistImageVersion(conversationId, versionId, bytes, format);
+                long completedAt = nextTimelineTimestamp();
+                version.status = "succeeded";
+                version.localPath = imageFile.getAbsolutePath();
+                version.thumbnailPath = imageFile.getAbsolutePath();
+                version.mimeType = mime;
+                version.completedAt = completedAt;
+                chatDao.completeImageVersion(versionId, version.status, version.localPath,
+                        version.thumbnailPath, version.mimeType, completedAt);
+                uiHandler.post(() -> {
+                    if (conversationId.equals(currentConversationId)) {
+                        showImageResult(version);
+                    } else {
+                        toast("图片已生成并保存到原对话");
+                    }
+                });
             } catch (Exception e) {
+                long completedAt = nextTimelineTimestamp();
+                version.status = "failed";
+                version.completedAt = completedAt;
+                chatDao.completeImageVersion(versionId, version.status, null, null, null, completedAt);
                 String message = e.getMessage() != null && e.getMessage().contains("HTTP 403") ? "当前账号尚未开通图片权限" : friendlyError(e);
-                uiHandler.post(() -> toast(message));
-            } finally { uiHandler.post(() -> setBusy(false, "已连接 15code")); }
+                uiHandler.post(() -> {
+                    if (conversationId.equals(currentConversationId)) {
+                        addBubble("15code", "图片任务失败：" + message, false);
+                    } else {
+                        toast("原对话中的图片任务失败：" + message);
+                    }
+                });
+            } finally {
+                uiHandler.post(() -> {
+                    imageRequestRunning = false;
+                    setBusy(false, "已连接 15code");
+                    updateChatControls();
+                });
+            }
         });
     }
 
-    private JSONObject postImageEdit(String prompt, String dataUrl, String size, String quality, String format) throws Exception {
-        if (dataUrl == null) throw new Exception("请先附加要修改的图片");
-        int comma = dataUrl.indexOf(',');
-        byte[] image = Base64.decode(comma >= 0 ? dataUrl.substring(comma + 1) : dataUrl, Base64.DEFAULT);
+    private JSONObject postImageEdit(String prompt, String dataUrl, String localPath,
+                                     String inputMimeType, String size, String quality,
+                                     String format, String requestId) throws Exception {
+        if ((dataUrl == null || dataUrl.isEmpty()) && (localPath == null || localPath.isEmpty())) {
+            throw new Exception("请先附加要修改的图片");
+        }
+        String mimeType = inputMimeType == null || !inputMimeType.startsWith("image/")
+                ? imageMimeType(dataUrl) : inputMimeType;
         String boundary = "----15code-" + UUID.randomUUID();
         HttpURLConnection conn = (HttpURLConnection) new URL(IMAGE_EDITS).openConnection();
         conn.setConnectTimeout(20000); conn.setReadTimeout(180000); conn.setRequestMethod("POST"); conn.setDoOutput(true);
         conn.setRequestProperty("Authorization", "Bearer " + goKey);
         conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
-        conn.setRequestProperty("X-Client-Request-Id", "img-edit-" + UUID.randomUUID());
+        conn.setRequestProperty("X-Client-Request-Id", requestId);
+        conn.setChunkedStreamingMode(8192);
         try (OutputStream out = conn.getOutputStream()) {
             writeMultipartField(out, boundary, "model", "gpt-image-2"); writeMultipartField(out, boundary, "prompt", prompt);
             writeMultipartField(out, boundary, "size", size); writeMultipartField(out, boundary, "quality", quality);
             writeMultipartField(out, boundary, "output_format", format);
-            out.write(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"image\"; filename=\"input.png\"\r\nContent-Type: image/png\r\n\r\n").getBytes(StandardCharsets.UTF_8));
-            out.write(image); out.write(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+            out.write(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"image\"; filename=\"input."
+                    + imageExtension(mimeType) + "\"\r\nContent-Type: " + mimeType + "\r\n\r\n")
+                    .getBytes(StandardCharsets.UTF_8));
+            if (localPath != null && !localPath.isEmpty()) {
+                copyFileToStreamBounded(localPath, out, MAX_GENERATED_IMAGE_BYTES);
+            } else {
+                int comma = dataUrl.indexOf(',');
+                byte[] image = Base64.decode(comma >= 0 ? dataUrl.substring(comma + 1) : dataUrl,
+                        Base64.DEFAULT);
+                if (image.length > MAX_IMAGE_BYTES) throw new IOException("图片过大，请选择 4 MB 以内的图片");
+                out.write(image);
+            }
+            out.write(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
         }
         int code = conn.getResponseCode();
         String text = readAll(code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream());
@@ -573,15 +708,46 @@ public class MainActivity extends Activity {
         out.write(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + name + "\"\r\n\r\n" + value + "\r\n").getBytes(StandardCharsets.UTF_8));
     }
 
-    private void showImageResult(String dataUrl) {
-        byte[] bytes = Base64.decode(dataUrl.substring(dataUrl.indexOf(',') + 1), Base64.DEFAULT);
+    private File persistImageVersion(String conversationId, String versionId, byte[] bytes, String format) throws IOException {
+        File directory = new File(getFilesDir(), "image-conversations/" + conversationId);
+        if (!directory.exists() && !directory.mkdirs()) throw new IOException("无法创建图片会话目录");
+        String extension = "jpeg".equals(format) ? "jpg" : "webp".equals(format) ? "webp" : "png";
+        File target = new File(directory, versionId + "." + extension);
+        try (FileOutputStream output = new FileOutputStream(target)) { output.write(bytes); }
+        return target;
+    }
+
+    private File persistAlbumAttachment(String conversationId, byte[] bytes, String mimeType)
+            throws IOException {
+        File directory = new File(getFilesDir(), "image-attachments/" + conversationId);
+        if (!directory.exists() && !directory.mkdirs()) {
+            throw new IOException("无法创建图片附件目录");
+        }
+        File target = new File(directory,
+                "attachment-" + UUID.randomUUID() + "." + imageExtension(mimeType));
+        try (FileOutputStream output = new FileOutputStream(target)) {
+            output.write(bytes);
+        }
+        return target;
+    }
+
+    private void showImageResult(ImageVersionEntity version) {
+        final String mimeType = safeImageMimeType(version);
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(10), dp(10), dp(10), dp(10));
         card.setBackground(makeBg(0xFFFFFFFF, 0xFFE2E8F0, dp(14)));
+        TextView caption = new TextView(this);
+        caption.setText(("edit".equals(version.operation) ? "修改结果" : "生成结果")
+                + (version.prompt == null || version.prompt.isEmpty() ? "" : " · " + version.prompt));
+        caption.setTextColor(0xFF334155);
+        caption.setTextSize(13);
+        caption.setPadding(dp(2), 0, dp(2), dp(8));
+        card.addView(caption, new LinearLayout.LayoutParams(-1, -2));
         ImageView preview = new ImageView(this);
         preview.setAdjustViewBounds(true);
-        preview.setImageBitmap(BitmapFactory.decodeByteArray(bytes, 0, bytes.length));
+        preview.setMinimumHeight(dp(160));
+        preview.setContentDescription("生成图片");
         card.addView(preview, new LinearLayout.LayoutParams(-1, -2));
         LinearLayout actions = new LinearLayout(this);
         actions.setGravity(Gravity.RIGHT);
@@ -593,9 +759,9 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
         lp.setMargins(0, dp(8), dp(42), dp(8));
         messageList.addView(card, lp);
-        edit.setOnClickListener(v -> { selectedImageDataUrl = dataUrl; selectedImageName = "生成图片"; updateAttachmentPreview(); showImageStudioDialog(); });
-        save.setOnClickListener(v -> saveImageToGallery(bytes, imageMimeType(dataUrl)));
-        setBusy(false, "图片已生成 · 可继续对话或修改");
+        edit.setOnClickListener(v -> selectGeneratedImageVersion(version, true));
+        save.setOnClickListener(v -> saveImageToGallery(version.localPath, mimeType));
+        loadImageCardPreview(version, preview);
         scrollToChatBottom();
     }
 
@@ -605,45 +771,384 @@ public class MainActivity extends Activity {
         return "image/png";
     }
 
-    private void saveImageToGallery(byte[] bytes, String mimeType) {
+    private void saveImageToGallery(String localPath, String mimeType) {
+        imagePreviewExecutor.execute(() -> {
+            try {
+                String extension = imageExtension(mimeType);
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.Images.Media.DISPLAY_NAME,
+                        "15code-image-" + System.currentTimeMillis() + "." + extension);
+                values.put(MediaStore.Images.Media.MIME_TYPE, mimeType);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    values.put(MediaStore.Images.Media.RELATIVE_PATH,
+                            Environment.DIRECTORY_PICTURES + "/15code");
+                }
+                Uri uri = getContentResolver().insert(
+                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+                if (uri == null) throw new IOException("无法创建图片文件");
+                try (OutputStream out = getContentResolver().openOutputStream(uri)) {
+                    if (out == null) throw new IOException("无法写入图片");
+                    copyFileToStreamBounded(localPath, out, MAX_GENERATED_IMAGE_BYTES);
+                }
+                uiHandler.post(() -> toast("图片已保存到系统相册"));
+            } catch (Exception e) {
+                uiHandler.post(() -> toast("保存失败：" + e.getMessage()));
+            }
+        });
+    }
+
+    private long beginImageSelection() {
+        deleteSelectedImageOwnedFile();
+        long generation = ++imageSelectionGeneration;
+        imageAttachmentLoading = true;
+        selectedImageDataUrl = null;
+        selectedImageLocalPath = null;
+        selectedImageMimeType = null;
+        selectedImageName = null;
+        selectedImageVersionId = null;
+        selectedImageConversationId = null;
+        selectedImageOwnedFile = false;
+        selectedImagePreviewBitmap = null;
+        updateAttachmentPreview();
+        updateChatControls();
+        return generation;
+    }
+
+    private void finishAlbumImageSelection(long generation, String conversationId,
+                                           String localPath, String mimeType, Bitmap preview) {
+        if (generation != imageSelectionGeneration || isFinishing() || isDestroyed()
+                || !conversationId.equals(currentConversationId)) {
+            deleteFileQuietly(localPath);
+            return;
+        }
+        selectedImageDataUrl = null;
+        selectedImageLocalPath = localPath;
+        selectedImageMimeType = mimeType;
+        selectedImageName = "图片";
+        selectedImageVersionId = null;
+        selectedImageConversationId = conversationId;
+        selectedImageOwnedFile = true;
+        selectedImagePreviewBitmap = preview;
+        imageAttachmentLoading = false;
+        updateAttachmentPreview();
         try {
-            String extension = "image/jpeg".equals(mimeType) ? "jpg" : "image/webp".equals(mimeType) ? "webp" : "png";
-            ContentValues values = new ContentValues();
-            values.put(MediaStore.Images.Media.DISPLAY_NAME, "15code-image-" + System.currentTimeMillis() + "." + extension);
-            values.put(MediaStore.Images.Media.MIME_TYPE, mimeType);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/15code");
-            Uri uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
-            if (uri == null) throw new IOException("无法创建图片文件");
-            try (OutputStream out = getContentResolver().openOutputStream(uri)) { if (out == null) throw new IOException("无法写入图片"); out.write(bytes); }
-            toast("图片已保存到系统相册");
-        } catch (Exception e) { toast("保存失败：" + e.getMessage()); }
+            boolean switched = selectVisionModelForImage();
+            Model imageModel = findModel(selectedModel);
+            if (imageModel == null || !imageModel.isAvailable() || !imageModel.vision) {
+                throw new Exception("当前目录没有可用的图片模型");
+            }
+            statusText.setText(switched
+                    ? "已附加图片 · 已切换到 " + modelLabel(selectedModel)
+                    : "已附加图片 · 当前模型 " + modelLabel(selectedModel));
+            persistCurrentImageSelection();
+            setBusy(false, statusText.getText().toString());
+            updateChatControls();
+        } catch (Exception error) {
+            clearSelectedImageState();
+            setBusy(false, "已连接 15code");
+            updateChatControls();
+            toast(error.getMessage());
+        }
+    }
+
+    private void failImageSelection(long generation, Exception error) {
+        if (generation != imageSelectionGeneration || isFinishing() || isDestroyed()) return;
+        clearSelectedImageState();
+        setBusy(false, "已连接 15code");
+        toast(error.getMessage());
+    }
+
+    private void selectGeneratedImageVersion(ImageVersionEntity version, boolean openEditor) {
+        if (version == null || version.localPath == null || version.localPath.isEmpty()) {
+            toast("图片文件不可用");
+            return;
+        }
+        final long generation = beginImageSelection();
+        setBusy(true, "正在准备继续修改...");
+        imagePreviewExecutor.execute(() -> {
+            try {
+                File file = new File(version.localPath);
+                if (!file.isFile()) throw new IOException("图片文件不存在");
+                if (file.length() > MAX_GENERATED_IMAGE_BYTES) throw new IOException("图片文件过大");
+                Bitmap preview = decodeSampledBitmap(file, ATTACHMENT_PREVIEW_MAX_DIMENSION);
+                uiHandler.post(() -> {
+                    if (generation != imageSelectionGeneration || isFinishing() || isDestroyed()) return;
+                    selectedImageDataUrl = null;
+                    selectedImageLocalPath = version.localPath;
+                    selectedImageMimeType = safeImageMimeType(version);
+                    selectedImageName = "生成图片";
+                    selectedImageVersionId = version.id;
+                    selectedImageConversationId = version.conversationId;
+                    selectedImageOwnedFile = false;
+                    selectedImagePreviewBitmap = preview;
+                    imageAttachmentLoading = false;
+                    persistCurrentImageSelection();
+                    updateAttachmentPreview();
+                    setBusy(false, "已选择图片版本 · 可继续修改");
+                    updateChatControls();
+                    if (openEditor) showImageStudioDialog();
+                });
+            } catch (Exception error) {
+                uiHandler.post(() -> {
+                    if (generation != imageSelectionGeneration || isFinishing() || isDestroyed()) return;
+                    clearSelectedImageState();
+                    setBusy(false, "已连接 15code");
+                    updateChatControls();
+                    toast(error.getMessage());
+                });
+            }
+        });
+    }
+
+    private void loadImageCardPreview(ImageVersionEntity version, ImageView target) {
+        if (version == null || version.localPath == null || version.localPath.isEmpty()) return;
+        final String conversationId = currentConversationId;
+        final long loadGeneration = conversationLoadGeneration;
+        imagePreviewExecutor.execute(() -> {
+            try {
+                Bitmap preview = decodeSampledBitmap(new File(version.localPath),
+                        CARD_PREVIEW_MAX_DIMENSION);
+                uiHandler.post(() -> {
+                    if (conversationId.equals(currentConversationId)
+                            && loadGeneration == conversationLoadGeneration
+                            && target.isAttachedToWindow()) {
+                        target.setImageBitmap(preview);
+                    }
+                });
+            } catch (Exception ignored) {
+                uiHandler.post(() -> {
+                    if (target.isAttachedToWindow()) target.setContentDescription("图片文件不可用");
+                });
+            }
+        });
+    }
+
+    private Bitmap decodeSampledBitmap(byte[] bytes, int maxDimension) throws IOException {
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.length, bounds);
+        BitmapFactory.Options options = sampledOptions(bounds.outWidth, bounds.outHeight, maxDimension);
+        Bitmap bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, options);
+        if (bitmap == null) throw new IOException("无法解析图片");
+        return bitmap;
+    }
+
+    private Bitmap decodeSampledBitmap(File file, int maxDimension) throws IOException {
+        if (file == null || !file.isFile()) throw new IOException("图片文件不存在");
+        if (file.length() > MAX_GENERATED_IMAGE_BYTES) throw new IOException("图片文件过大");
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        BitmapFactory.decodeFile(file.getAbsolutePath(), bounds);
+        BitmapFactory.Options options = sampledOptions(bounds.outWidth, bounds.outHeight, maxDimension);
+        Bitmap bitmap = BitmapFactory.decodeFile(file.getAbsolutePath(), options);
+        if (bitmap == null) throw new IOException("无法解析图片");
+        return bitmap;
+    }
+
+    private BitmapFactory.Options sampledOptions(int width, int height, int maxDimension)
+            throws IOException {
+        if (width <= 0 || height <= 0) throw new IOException("无效图片");
+        int sample = 1;
+        while (width / sample > maxDimension * 2 || height / sample > maxDimension * 2) {
+            sample *= 2;
+        }
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inSampleSize = sample;
+        options.inPreferredConfig = Bitmap.Config.RGB_565;
+        return options;
+    }
+
+    private void copyFileToStreamBounded(String localPath, OutputStream out, int limit)
+            throws IOException {
+        File source = new File(localPath);
+        if (!source.isFile()) throw new IOException("图片文件不存在");
+        if (source.length() > limit) throw new IOException("图片文件过大");
+        try (InputStream input = new FileInputStream(source)) {
+            byte[] chunk = new byte[8192];
+            int total = 0;
+            int read;
+            while ((read = input.read(chunk)) != -1) {
+                total += read;
+                if (total > limit) throw new IOException("图片文件过大");
+                out.write(chunk, 0, read);
+            }
+        }
+    }
+
+    private String safeImageMimeType(ImageVersionEntity version) {
+        if (version.mimeType != null && version.mimeType.startsWith("image/")) {
+            return version.mimeType;
+        }
+        if ("jpeg".equals(version.format) || "jpg".equals(version.format)) return "image/jpeg";
+        if ("webp".equals(version.format)) return "image/webp";
+        return "image/png";
+    }
+
+    private String imageExtension(String mimeType) {
+        if ("image/jpeg".equals(mimeType)) return "jpg";
+        if ("image/webp".equals(mimeType)) return "webp";
+        return "png";
     }
 
     private void updateAttachmentPreview() {
         if (attachmentPreview == null) return;
-        if (selectedImageDataUrl == null || selectedImageDataUrl.isEmpty()) {
+        if (!hasSelectedImage()) {
             attachmentPreview.setVisibility(View.GONE);
             if (attachmentImage != null) attachmentImage.setImageDrawable(null);
             if (attachButton != null) attachButton.setText("＋");
             return;
         }
-        try {
-            int comma = selectedImageDataUrl.indexOf(',');
-            String encoded = comma >= 0 ? selectedImageDataUrl.substring(comma + 1) : selectedImageDataUrl;
-            byte[] bytes = Base64.decode(encoded, Base64.DEFAULT);
-            attachmentImage.setImageBitmap(BitmapFactory.decodeByteArray(bytes, 0, bytes.length));
-        } catch (Exception ignored) {
-            attachmentImage.setImageDrawable(null);
-        }
+        attachmentImage.setImageBitmap(selectedImagePreviewBitmap);
         attachmentPreview.setVisibility(View.VISIBLE);
         attachButton.setText("图");
     }
 
     private void clearSelectedImage() {
-        selectedImageDataUrl = null;
-        selectedImageName = null;
-        updateAttachmentPreview();
+        clearSelectedImageState();
         statusText.setText("已移除图片");
+    }
+
+    private void clearSelectedImageState() {
+        deleteSelectedImageOwnedFile();
+        imageSelectionGeneration++;
+        selectedImageDataUrl = null;
+        selectedImageLocalPath = null;
+        selectedImageMimeType = null;
+        selectedImageName = null;
+        selectedImageVersionId = null;
+        selectedImageConversationId = null;
+        selectedImageOwnedFile = false;
+        selectedImagePreviewBitmap = null;
+        imageAttachmentLoading = false;
+        updateAttachmentPreview();
+        updateChatControls();
+    }
+
+    private void resetImageSelectionForConversationChange() {
+        imageSelectionGeneration++;
+        selectedImageDataUrl = null;
+        selectedImageLocalPath = null;
+        selectedImageMimeType = null;
+        selectedImageName = null;
+        selectedImageVersionId = null;
+        selectedImageConversationId = null;
+        selectedImageOwnedFile = false;
+        selectedImagePreviewBitmap = null;
+        imageAttachmentLoading = false;
+        updateAttachmentPreview();
+        updateChatControls();
+    }
+
+    private void persistCurrentImageSelection() {
+        if (prefs == null || currentConversationId == null) return;
+        String prefix = imageSelectionKeyPrefix(currentConversationId);
+        SharedPreferences.Editor editor = prefs.edit();
+        if (!hasSelectedImage()) {
+            editor.remove(prefix + "conversationId")
+                    .remove(prefix + "localPath")
+                    .remove(prefix + "mimeType")
+                    .remove(prefix + "name")
+                    .remove(prefix + "versionId")
+                    .remove(prefix + "owned")
+                    .apply();
+            return;
+        }
+        editor.putString(prefix + "conversationId", currentConversationId)
+                .putString(prefix + "localPath", selectedImageLocalPath)
+                .putString(prefix + "mimeType", selectedImageMimeType)
+                .putString(prefix + "name", selectedImageName)
+                .putString(prefix + "versionId", selectedImageVersionId)
+                .putBoolean(prefix + "owned", selectedImageOwnedFile)
+                .apply();
+    }
+
+    private void restoreImageSelection(String conversationId, long loadGeneration) {
+        String prefix = imageSelectionKeyPrefix(conversationId);
+        String savedConversationId = prefs.getString(prefix + "conversationId", null);
+        String localPath = prefs.getString(prefix + "localPath", null);
+        String mimeType = prefs.getString(prefix + "mimeType", null);
+        String name = prefs.getString(prefix + "name", null);
+        String versionId = prefs.getString(prefix + "versionId", null);
+        boolean owned = prefs.getBoolean(prefix + "owned", false);
+        if (!conversationId.equals(savedConversationId) || localPath == null || localPath.isEmpty()) {
+            return;
+        }
+        File file = new File(localPath);
+        if (!file.isFile() || file.length() > MAX_GENERATED_IMAGE_BYTES) {
+            clearPersistedImageSelection(conversationId);
+            return;
+        }
+        imageAttachmentLoading = true;
+        updateChatControls();
+        final long selectionGeneration = ++imageSelectionGeneration;
+        imagePreviewExecutor.execute(() -> {
+            try {
+                Bitmap preview = decodeSampledBitmap(file, ATTACHMENT_PREVIEW_MAX_DIMENSION);
+                uiHandler.post(() -> {
+                    if (!conversationId.equals(currentConversationId)
+                            || loadGeneration != conversationLoadGeneration
+                            || selectionGeneration != imageSelectionGeneration
+                            || isFinishing() || isDestroyed()) return;
+                    selectedImageDataUrl = null;
+                    selectedImageLocalPath = localPath;
+                    selectedImageMimeType = mimeType;
+                    selectedImageName = name;
+                    selectedImageVersionId = versionId;
+                    selectedImageConversationId = conversationId;
+                    selectedImageOwnedFile = owned;
+                    selectedImagePreviewBitmap = preview;
+                    imageAttachmentLoading = false;
+                    updateAttachmentPreview();
+                    updateChatControls();
+                });
+            } catch (Exception ignored) {
+                uiHandler.post(() -> {
+                    if (selectionGeneration != imageSelectionGeneration) return;
+                    imageAttachmentLoading = false;
+                    clearPersistedImageSelection(conversationId);
+                    updateChatControls();
+                });
+            }
+        });
+    }
+
+    private void clearPersistedImageSelection(String conversationId) {
+        if (conversationId == null || conversationId.isEmpty()) return;
+        String prefix = imageSelectionKeyPrefix(conversationId);
+        prefs.edit().remove(prefix + "conversationId")
+                .remove(prefix + "localPath")
+                .remove(prefix + "mimeType")
+                .remove(prefix + "name")
+                .remove(prefix + "versionId")
+                .remove(prefix + "owned")
+                .apply();
+    }
+
+    private String imageSelectionKeyPrefix(String conversationId) {
+        return "pendingImageSelection:" + conversationId + ":";
+    }
+
+    private void deleteSelectedImageOwnedFile() {
+        if (selectedImageOwnedFile && selectedImageLocalPath != null) {
+            deleteFileQuietly(selectedImageLocalPath);
+        }
+        clearPersistedImageSelection(selectedImageConversationId != null
+                ? selectedImageConversationId : currentConversationId);
+    }
+
+    private void deleteFileQuietly(String localPath) {
+        if (localPath == null || localPath.isEmpty()) return;
+        try {
+            File file = new File(localPath);
+            if (file.isFile()) file.delete();
+        } catch (Exception ignored) {}
+    }
+
+    private boolean hasSelectedImage() {
+        return (selectedImageDataUrl != null && !selectedImageDataUrl.isEmpty())
+                || (selectedImageLocalPath != null && !selectedImageLocalPath.isEmpty()
+                && currentConversationId != null
+                && currentConversationId.equals(selectedImageConversationId));
     }
 
     private void showSmokeComposer() {
@@ -656,7 +1161,24 @@ public class MainActivity extends Activity {
         models.add(Model.basic(PREFERRED_MODEL, PREFERRED_MODEL));
         setBusy(false, "Smoke test");
         showChat();
-        root.postDelayed(() -> focusPromptInput(true), 400);
+        if (getIntent().getBooleanExtra("smokeResetDraft", false)) {
+            draftEditRevision++;
+            restorePromptDraft("");
+            persistDraftAsync(currentConversationId, "", true);
+        }
+        if (getIntent().getBooleanExtra("smokeStreaming", false)) {
+            setStreamingUi(true);
+            uiHandler.postDelayed(() -> {
+                TextView bubble = addBubble("15code", "流式输入稳定性测试", false);
+                runComposerStreamingSmokeFrame(bubble, 0);
+            }, 700);
+        }
+    }
+
+    private void runComposerStreamingSmokeFrame(TextView bubble, int frame) {
+        if (!composerSmokeMode || frame >= 120) return;
+        updateBubble(bubble, "15code", "流式输入稳定性测试 · " + frame);
+        uiHandler.postDelayed(() -> runComposerStreamingSmokeFrame(bubble, frame + 1), 50);
     }
 
     private boolean isDebugBuild() {
@@ -879,172 +1401,153 @@ public class MainActivity extends Activity {
     }
 
     private void sendMessage() {
+        if (streaming) return;
+        if (imageAttachmentLoading || imageRequestRunning) {
+            toast(imageAttachmentLoading ? "图片正在读取" : "图片正在生成");
+            return;
+        }
+        if (historyLoadStarted) {
+            toast("对话正在加载，文字已保存在输入框中");
+            return;
+        }
         String text = promptInput.getText().toString().trim();
-        if (text.isEmpty() && selectedImageDataUrl == null) {
-            openComposerDialog();
+        if (text.isEmpty() && !hasSelectedImage()) {
+            toast("请输入消息");
             return;
         }
         sendMessageText(text);
     }
 
-    private void openComposerDialog() {
-        LinearLayout sheet = new LinearLayout(this);
-        sheet.setOrientation(LinearLayout.VERTICAL);
-        sheet.setPadding(dp(16), dp(14), dp(16), dp(16));
-        sheet.setBackground(makeBg(0xFFFFFFFF, 0xFFE2E8F0, dp(18)));
-
-        TextView title = new TextView(this);
-        title.setText("输入消息");
-        title.setTextColor(0xFF0F172A);
-        title.setTextSize(16);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        sheet.addView(title, new LinearLayout.LayoutParams(-1, dp(30)));
-
-        EditText input = new EditText(this);
-        input.setHint("发消息给 15code");
-        input.setContentDescription("chat-composer-sheet-input");
-        input.setMinLines(3);
-        input.setMaxLines(6);
-        input.setSingleLine(false);
-        input.setInputType(InputType.TYPE_CLASS_TEXT
-                | InputType.TYPE_TEXT_FLAG_MULTI_LINE
-                | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
-        input.setImeOptions(EditorInfo.IME_FLAG_NO_EXTRACT_UI);
-        int pad = dp(16);
-        input.setPadding(pad, dp(10), pad, dp(10));
-        input.setTextColor(0xFF111827);
-        input.setHintTextColor(0xFF94A3B8);
-        input.setTextSize(16);
-        input.setBackground(makeBg(0xFFF8FAFC, 0xFFCBD5E1, dp(14)));
-        input.setText(currentDraft);
-        input.setSelection(input.getText().length());
-        sheet.addView(input, new LinearLayout.LayoutParams(-1, dp(132)));
-
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        actions.setGravity(Gravity.CENTER_VERTICAL | Gravity.RIGHT);
-        actions.setPadding(0, dp(12), 0, 0);
-
-        Button cancel = new Button(this);
-        cancel.setText("取消");
-        cancel.setAllCaps(false);
-        cancel.setTextColor(0xFF334155);
-        cancel.setBackground(makeBg(0xFFFFFFFF, 0xFFCBD5E1, dp(14)));
-        actions.addView(cancel, new LinearLayout.LayoutParams(dp(82), dp(48)));
-
-        Button send = new Button(this);
-        send.setText("发送");
-        send.setAllCaps(false);
-        send.setTextColor(0xFFFFFFFF);
-        send.setBackground(makeBg(0xFF2563EB, 0xFF2563EB, dp(14)));
-        LinearLayout.LayoutParams sendLp = new LinearLayout.LayoutParams(dp(92), dp(48));
-        sendLp.setMargins(dp(10), 0, 0, 0);
-        actions.addView(send, sendLp);
-        sheet.addView(actions, new LinearLayout.LayoutParams(-1, dp(60)));
-
-        PopupWindow popup = new PopupWindow(sheet, -1, -2, true);
-        popup.setBackgroundDrawable(new ColorDrawable(0x00000000));
-        popup.setOutsideTouchable(true);
-        popup.setInputMethodMode(PopupWindow.INPUT_METHOD_NEEDED);
-        popup.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
-        popup.setOnDismissListener(() -> saveDraft(input.getText().toString()));
-
-        cancel.setOnClickListener(v -> popup.dismiss());
-        send.setOnClickListener(v -> {
-            String text = input.getText().toString().trim();
-            if (text.isEmpty() && selectedImageDataUrl == null) {
-                toast("请输入消息");
-                return;
-            }
-            popup.dismiss();
-            saveDraft("");
-            sendMessageText(text);
-        });
-
-        popup.showAtLocation(root, Gravity.BOTTOM, 0, 0);
-        input.requestFocus();
-        input.postDelayed(() -> openKeyboard(input), 160);
+    private void sendMessageText(String text) {
+        String attachedImage = selectedImageDataUrl;
+        String attachedImagePath = selectedImageLocalPath;
+        String attachedImageMime = selectedImageMimeType;
+        String imageName = selectedImageName;
+        boolean deleteAttachedFileAfterRead = selectedImageOwnedFile;
+        if ((attachedImage == null || attachedImage.isEmpty())
+                && attachedImagePath != null && !attachedImagePath.isEmpty()) {
+            final String pendingPath = attachedImagePath;
+            final String pendingMime = attachedImageMime;
+            final String pendingName = imageName;
+            final boolean pendingOwnedFile = deleteAttachedFileAfterRead;
+            selectedImageOwnedFile = false;
+            imageAttachmentLoading = true;
+            updateChatControls();
+            setBusy(true, "正在准备图片消息...");
+            imagePreviewExecutor.execute(() -> {
+                try {
+                    byte[] bytes = readLimitedFileBytes(pendingPath, MAX_GENERATED_IMAGE_BYTES);
+                    String mime = pendingMime == null ? "image/png" : pendingMime;
+                    String dataUrl = "data:" + mime + ";base64,"
+                            + Base64.encodeToString(bytes, Base64.NO_WRAP);
+                    uiHandler.post(() -> {
+                        imageAttachmentLoading = false;
+                        if (pendingOwnedFile) deleteFileQuietly(pendingPath);
+                        sendMessageTextWithAttachment(text, dataUrl, pendingName);
+                    });
+                } catch (Exception error) {
+                    uiHandler.post(() -> {
+                        imageAttachmentLoading = false;
+                        if (pendingOwnedFile) selectedImageOwnedFile = true;
+                        setBusy(false, "已连接 15code");
+                        updateChatControls();
+                        toast("读取附加图片失败：" + error.getMessage());
+                    });
+                }
+            });
+            return;
+        }
+        sendMessageTextWithAttachment(text, attachedImage, imageName);
     }
 
-    private void sendMessageText(String text) {
-        promptInput.setText("");
-        String attachedImage = selectedImageDataUrl;
-        String imageName = selectedImageName;
-        selectedImageDataUrl = null;
-        selectedImageName = null;
-        updateAttachmentPreview();
+    private void sendMessageTextWithAttachment(String text, String attachedImage, String imageName) {
+        final String requestModel = selectedModel;
+        final boolean requestForceWebSearch = forceWebSearch;
+        cancelPendingDraftSave();
+        restorePromptDraft("");
+        persistDraftAsync(currentConversationId, "", false);
+        clearSelectedImageState();
 
         String displayText = text.isEmpty() ? "[图片]" : text;
-        if (attachedImage != null) displayText += "\n[已附加图片]";
+        if (attachedImage != null) displayText += "\n[已附加" + (imageName == null ? "图片" : imageName) + "]";
         addBubble("你", displayText, true);
         try {
             JSONObject user = new JSONObject();
             user.put("role", "user");
             user.put("content", text.isEmpty() ? "[图片]" : text);
+            user.put("createdAt", nextTimelineTimestamp());
             messages.put(user);
             trimMessages();
             saveChatHistory();
         } catch (Exception ignored) {}
 
-        TextView assistantBubble = addBubble(modelLabel(selectedModel), "正在思考...", false);
+        TextView assistantBubble = addBubble(modelLabel(requestModel), "正在思考...", false);
         setStreamingUi(true);
         resetStreamRenderState();
+        final String requestImageDataUrl = attachedImage;
         new Thread(() -> {
             StringBuilder answer = new StringBuilder();
             JSONObject body = new JSONObject();
             try {
-                body.put("model", selectedModel);
+                body.put("model", requestModel);
                 body.put("stream", true);
-                if (forceWebSearch) {
+                if (requestForceWebSearch) {
                     body.put("webSearch", true);
                 } else {
                     body.put("searchMode", "auto");
                 }
                 body.put("max_tokens", 4096);
-                body.put("messages", buildRequestMessages(text, attachedImage));
+                body.put("messages", buildRequestMessages(text, requestImageDataUrl));
                 streamChat(body, chunk -> {
                     answer.append(chunk);
-                    queueBubbleUpdate(assistantBubble, modelLabel(selectedModel), answer.toString());
+                    queueBubbleUpdate(assistantBubble, modelLabel(requestModel), answer.toString());
                 });
-                flushBubbleUpdate(assistantBubble, modelLabel(selectedModel), answer.toString());
+                flushBubbleUpdate(assistantBubble, modelLabel(requestModel), answer.toString());
                 if (answer.length() == 0) throw new Exception("模型返回为空，请换模型重试");
                 JSONObject assistant = new JSONObject();
                 assistant.put("role", "assistant");
                 assistant.put("content", answer.toString());
+                assistant.put("createdAt", nextTimelineTimestamp());
                 messages.put(assistant);
                 trimMessages();
                 saveChatHistory();
             } catch (Exception e) {
-                if (stopRequested && answer.length() > 0) {
-                    try {
-                        JSONObject assistant = new JSONObject();
-                        assistant.put("role", "assistant");
-                        assistant.put("content", answer.toString());
-                        messages.put(assistant);
-                        trimMessages();
-                        saveChatHistory();
-                    } catch (Exception ignored) {}
-                    flushBubbleUpdate(assistantBubble, modelLabel(selectedModel), answer + "\n\n[已停止]");
+                if (stopRequested) {
+                    if (answer.length() > 0) {
+                        try {
+                            JSONObject assistant = new JSONObject();
+                            assistant.put("role", "assistant");
+                            assistant.put("content", answer.toString());
+                            assistant.put("createdAt", nextTimelineTimestamp());
+                            messages.put(assistant);
+                            trimMessages();
+                            saveChatHistory();
+                        } catch (Exception ignored) {}
+                        flushBubbleUpdate(assistantBubble, modelLabel(requestModel), answer + "\n\n[已停止]");
+                    } else {
+                        flushBubbleUpdate(assistantBubble, modelLabel(requestModel), "[已停止]");
+                    }
                 } else if (answer.length() == 0 && isRetryableStreamError(e)) {
                     try {
-                        flushBubbleUpdate(assistantBubble, modelLabel(selectedModel), "连接不稳定，正在切换普通模式...");
+                        flushBubbleUpdate(assistantBubble, modelLabel(requestModel), "连接不稳定，正在切换普通模式...");
                         body.put("stream", false);
                         String fallback = completeChat(body);
                         if (fallback.isEmpty()) throw new Exception("模型返回为空，请换模型重试");
                         JSONObject assistant = new JSONObject();
                         assistant.put("role", "assistant");
                         assistant.put("content", fallback);
+                        assistant.put("createdAt", nextTimelineTimestamp());
                         messages.put(assistant);
                         trimMessages();
                         saveChatHistory();
-                        flushBubbleUpdate(assistantBubble, modelLabel(selectedModel), fallback);
+                        flushBubbleUpdate(assistantBubble, modelLabel(requestModel), fallback);
                     } catch (Exception fallbackError) {
                         flushBubbleUpdate(assistantBubble, "错误", friendlyError(fallbackError));
                     }
                 } else if (answer.length() == 0) {
                     flushBubbleUpdate(assistantBubble, "错误", friendlyError(e));
                 } else {
-                    flushBubbleUpdate(assistantBubble, modelLabel(selectedModel), answer + "\n\n[连接中断]");
+                    flushBubbleUpdate(assistantBubble, modelLabel(requestModel), answer + "\n\n[连接中断]");
                 }
             } finally {
                 activeChatConnection = null;
@@ -1101,17 +1604,20 @@ public class MainActivity extends Activity {
             boolean deleted = existing != null && existing.conversation.deleted;
             String title = existing == null ? conversationTitle(saved) : existing.conversation.title;
             if ((title == null || title.equals("新对话")) && saved.length() > 0) title = conversationTitle(saved);
-            chatDao.saveConversation(new ConversationEntity(conversationId, title, pinned, deleted,
-                    createdAt, now, currentDraft == null ? "" : currentDraft));
-            chatDao.deleteMessages(conversationId);
             List<MessageEntity> rows = new ArrayList<>();
+            long previousTimestamp = 0;
             for (int i = 0; i < saved.length(); i++) {
                 JSONObject item = saved.optJSONObject(i);
                 if (item == null) continue;
+                long timestamp = item.optLong("createdAt", 0);
+                if (timestamp <= 0) timestamp = now + i;
+                if (timestamp <= previousTimestamp) timestamp = previousTimestamp + 1;
+                previousTimestamp = timestamp;
                 rows.add(new MessageEntity(conversationId, item.optString("role"),
-                        item.optString("content"), now + i));
+                        item.optString("content"), timestamp));
             }
-            if (!rows.isEmpty()) chatDao.saveMessages(rows);
+            chatDao.replaceConversationMessages(new ConversationEntity(conversationId, title, pinned,
+                    deleted, createdAt, now, ""), rows);
             prefs.edit().remove("chatHistory").apply();
         } catch (Exception ignored) {}
     }
@@ -1127,12 +1633,69 @@ public class MainActivity extends Activity {
         return "新对话";
     }
 
-    private void saveDraft(String draft) {
-        currentDraft = draft == null ? "" : draft;
-        final String conversationId = currentConversationId;
-        final String value = currentDraft;
-        storageExecutor.execute(() -> {
-            ConversationWithMessages existing = chatDao.getConversation(conversationId);
+    private String imageConversationTitle(String prompt) {
+        String title = prompt == null ? "" : prompt.replace('\n', ' ').trim();
+        if (title.length() > 24) title = title.substring(0, 24) + "…";
+        return title.isEmpty() ? "图片对话" : title;
+    }
+
+    private synchronized long nextTimelineTimestamp() {
+        long now = System.currentTimeMillis();
+        if (now <= lastTimelineTimestamp) now = lastTimelineTimestamp + 1;
+        lastTimelineTimestamp = now;
+        return now;
+    }
+
+    private void appendTimelineMessage(String role, String content, long createdAt) {
+        try {
+            JSONObject message = new JSONObject();
+            message.put("role", role);
+            message.put("content", content);
+            message.put("createdAt", createdAt);
+            messages.put(message);
+            trimMessages();
+            saveChatHistory();
+        } catch (Exception ignored) {}
+    }
+
+    private void scheduleDraftSave(String conversationId, String draft) {
+        if (conversationId == null || conversationId.isEmpty()) return;
+        cancelPendingDraftSave();
+        final String value = draft == null ? "" : draft;
+        pendingDraftSave = () -> {
+            pendingDraftSave = null;
+            persistDraftAsync(conversationId, value, false);
+        };
+        uiHandler.postDelayed(pendingDraftSave, DRAFT_SAVE_DELAY_MS);
+    }
+
+    private void flushCurrentDraft() {
+        if (promptInput == null || currentConversationId == null || currentConversationId.isEmpty()) return;
+        if (!currentConversationId.equals(promptDraftConversationId)) return;
+        cancelPendingDraftSave();
+        currentDraft = promptInput.getText().toString();
+        persistDraftAsync(currentConversationId, currentDraft, true);
+    }
+
+    private void cancelPendingDraftSave() {
+        if (pendingDraftSave == null) return;
+        uiHandler.removeCallbacks(pendingDraftSave);
+        pendingDraftSave = null;
+    }
+
+    private void persistDraftAsync(String conversationId, String draft, boolean synchronousFallback) {
+        if (conversationId == null || conversationId.isEmpty()) return;
+        final String value = draft == null ? "" : draft;
+        SharedPreferences.Editor fallback = prefs.edit().putString(draftFallbackKey(conversationId), value);
+        if (synchronousFallback) fallback.commit();
+        else fallback.apply();
+        if (storageExecutor.isShutdown()) return;
+        storageExecutor.execute(() -> persistDraft(conversationId, value));
+    }
+
+    private void persistDraft(String conversationId, String value) {
+        try {
+            ConversationEntity existing = chatDao.getConversationEntity(conversationId);
             long now = System.currentTimeMillis();
             if (existing == null) {
                 chatDao.saveConversation(new ConversationEntity(conversationId, "新对话", false,
@@ -1140,12 +1703,49 @@ public class MainActivity extends Activity {
             } else {
                 chatDao.saveDraft(conversationId, value, now);
             }
-        });
+            String key = draftFallbackKey(conversationId);
+            if (value.equals(prefs.getString(key, null))) prefs.edit().remove(key).apply();
+        } catch (Exception ignored) {
+            // Keep the SharedPreferences fallback for the next process start.
+        }
+    }
+
+    private String draftFallbackKey(String conversationId) {
+        return "pendingDraft:" + conversationId;
+    }
+
+    private void restorePromptDraft(String draft) {
+        String value = draft == null ? "" : draft;
+        restoringDraft = true;
+        try {
+            promptInput.setText(value);
+            promptInput.setSelection(promptInput.getText().length());
+            currentDraft = value;
+            promptDraftConversationId = currentConversationId;
+        } finally {
+            restoringDraft = false;
+        }
+    }
+
+    private void preparePromptForConversation() {
+        restoringDraft = true;
+        try {
+            promptInput.setText("");
+            currentDraft = "";
+            promptDraftConversationId = null;
+        } finally {
+            restoringDraft = false;
+        }
     }
 
     private void streamChat(JSONObject body, StreamHandler handler) throws Exception {
+        if (stopRequested) throw new Exception("用户已停止生成");
         HttpURLConnection conn = (HttpURLConnection) new URL(SEARCH_CHAT).openConnection();
         activeChatConnection = conn;
+        if (stopRequested) {
+            conn.disconnect();
+            throw new Exception("用户已停止生成");
+        }
         conn.setConnectTimeout(20000);
         conn.setReadTimeout(600000);
         conn.setRequestMethod("POST");
@@ -1168,7 +1768,7 @@ public class MainActivity extends Activity {
             String event = "";
             String data = "";
             while ((line = reader.readLine()) != null) {
-                if (!streaming) throw new Exception("用户已停止生成");
+                if (stopRequested) throw new Exception("用户已停止生成");
                 if (line.trim().isEmpty()) {
                     if (!data.isEmpty()) {
                         if ("meta".equals(event)) {
@@ -1320,41 +1920,96 @@ public class MainActivity extends Activity {
 
     private void loadChatHistory() {
         historyLoadStarted = true;
+        updateChatControls();
         final String conversationId = currentConversationId;
+        final long loadGeneration = ++conversationLoadGeneration;
+        final long editRevisionAtStart = draftEditRevision;
+        restoreImageSelection(conversationId, loadGeneration);
         storageExecutor.execute(() -> {
             ConversationWithMessages stored = chatDao.getConversation(conversationId);
+            List<ImageVersionEntity> imageVersions =
+                    chatDao.listRecentImageVersions(conversationId, MAX_HISTORY_IMAGE_VERSIONS);
             String legacy = prefs.getString("chatHistory", "");
-            if (stored == null && legacy != null && !legacy.isEmpty()) {
+            if (!composerSmokeMode && stored == null && legacy != null && !legacy.isEmpty()) {
                 persistConversation(conversationId, legacy);
                 stored = chatDao.getConversation(conversationId);
             }
+            String fallbackDraft = prefs.getString(draftFallbackKey(conversationId), null);
             ConversationWithMessages result = stored;
-            runOnUiThread(() -> renderConversation(result));
+            if (fallbackDraft != null) {
+                persistDraft(conversationId, fallbackDraft);
+            }
+            runOnUiThread(() -> renderConversation(conversationId, loadGeneration,
+                    editRevisionAtStart, result, imageVersions, fallbackDraft));
         });
     }
 
-    private void renderConversation(ConversationWithMessages stored) {
+    private void renderConversation(String conversationId, long loadGeneration, long editRevisionAtStart,
+                                    ConversationWithMessages stored,
+                                    List<ImageVersionEntity> imageVersions, String fallbackDraft) {
+        if (!conversationId.equals(currentConversationId) || loadGeneration != conversationLoadGeneration) return;
         messageList.removeAllViews();
         while (messages.length() > 0) messages.remove(0);
-        currentDraft = stored == null ? "" : stored.conversation.draft;
+        String storedDraft = fallbackDraft != null
+                ? fallbackDraft
+                : stored == null ? "" : stored.conversation.draft;
+        if (draftEditRevision == editRevisionAtStart) restorePromptDraft(storedDraft);
+        List<TimelineEntry> timeline = new ArrayList<>();
         if (stored != null && stored.messages != null) {
             stored.messages.sort((left, right) -> Long.compare(left.createdAt, right.createdAt));
             int start = Math.max(0, stored.messages.size() - MAX_HISTORY_MESSAGES);
             for (int i = start; i < stored.messages.size(); i++) {
                 MessageEntity row = stored.messages.get(i);
                 if (row.content == null || row.content.isEmpty()) continue;
+                timeline.add(TimelineEntry.forMessage(row));
                 try {
                     JSONObject msg = new JSONObject();
                     msg.put("role", row.role);
                     msg.put("content", row.content);
+                    msg.put("createdAt", row.createdAt);
                     messages.put(msg);
-                    addBubble("user".equals(row.role) ? "你" : modelLabel(selectedModel),
-                            row.content, "user".equals(row.role));
+                    if (row.createdAt > lastTimelineTimestamp) lastTimelineTimestamp = row.createdAt;
                 } catch (Exception ignored) {}
+            }
+        }
+        if (imageVersions != null) {
+            for (ImageVersionEntity version : imageVersions) {
+                if (version == null) continue;
+                if (version.completedAt > lastTimelineTimestamp) {
+                    lastTimelineTimestamp = version.completedAt;
+                }
+                if (version.createdAt > lastTimelineTimestamp) {
+                    lastTimelineTimestamp = version.createdAt;
+                }
+                if ("succeeded".equals(version.status)
+                        && version.localPath != null && new File(version.localPath).isFile()) {
+                    timeline.add(TimelineEntry.forImage(version,
+                            version.completedAt > 0 ? version.completedAt : version.createdAt));
+                } else if ("failed".equals(version.status)) {
+                    timeline.add(TimelineEntry.forImageFailure(version,
+                            version.completedAt > 0 ? version.completedAt : version.createdAt));
+                }
+            }
+        }
+        Collections.sort(timeline, Comparator
+                .comparingLong((TimelineEntry entry) -> entry.timestamp)
+                .thenComparingInt(entry -> entry.kind)
+                .thenComparing(entry -> entry.stableId));
+        for (TimelineEntry entry : timeline) {
+            if (entry.message != null) {
+                MessageEntity row = entry.message;
+                addBubble("user".equals(row.role) ? "你" : modelLabel(selectedModel),
+                        row.content, "user".equals(row.role));
+            } else if (entry.image != null && entry.kind == TimelineEntry.KIND_IMAGE) {
+                showImageResult(entry.image);
+            } else if (entry.image != null) {
+                addBubble("15code", "图片任务失败："
+                        + (entry.image.prompt == null ? "" : entry.image.prompt), false);
             }
         }
         if (messageList.getChildCount() == 0) addBubble("15code", "已连接。", false);
         historyLoadStarted = false;
+        updateChatControls();
     }
 
     private List<String> modelNames() {
@@ -1552,22 +2207,27 @@ public class MainActivity extends Activity {
     }
 
     private void newChat() {
+        flushCurrentDraft();
         saveChatHistory();
+        persistCurrentImageSelection();
         currentConversationId = UUID.randomUUID().toString();
         prefs.edit().putString("currentConversationId", currentConversationId).apply();
         currentDraft = "";
+        draftEditRevision++;
+        conversationLoadGeneration++;
+        historyLoadStarted = false;
         while (messages.length() > 0) messages.remove(0);
         prefs.edit().remove("chatHistory").apply();
-        selectedImageDataUrl = null;
-        selectedImageName = null;
-        updateAttachmentPreview();
+        resetImageSelectionForConversationChange();
         messageList.removeAllViews();
         addBubble("15code", "新对话已开始。", false);
-        promptInput.setText("");
-        saveDraft("");
+        restorePromptDraft("");
+        persistDraftAsync(currentConversationId, "", false);
+        updateChatControls();
     }
 
     private void logout() {
+        clearSelectedImageState();
         securePrefs.remove("sessionToken");
         securePrefs.remove("goKey");
         prefs.edit().remove("accountEmail").remove("creditsUsd").apply();
@@ -1648,9 +2308,14 @@ public class MainActivity extends Activity {
     }
 
     private void openConversation(String id) {
+        flushCurrentDraft();
         saveChatHistory();
+        persistCurrentImageSelection();
         currentConversationId = id;
         prefs.edit().putString("currentConversationId", id).apply();
+        resetImageSelectionForConversationChange();
+        preparePromptForConversation();
+        draftEditRevision++;
         historyLoadStarted = false;
         loadChatHistory();
     }
@@ -1684,33 +2349,40 @@ public class MainActivity extends Activity {
         if (active) stopRequested = false;
         progress.setVisibility(active ? View.VISIBLE : View.GONE);
         statusText.setText(active ? "正在生成 · " + modelLabel(selectedModel) : "已连接 15code");
-        sendButton.setText(active ? "停止" : "发送");
-        promptInput.setEnabled(!active);
+        updateChatControls();
+    }
+
+    private void updateChatControls() {
+        if (sendButton == null) return;
+        if (streaming) {
+            sendButton.setText(stopRequested ? "停止中" : "停止");
+            sendButton.setEnabled(!stopRequested);
+        } else {
+            sendButton.setText(historyLoadStarted ? "加载中"
+                    : imageAttachmentLoading ? "读图中"
+                    : imageRequestRunning ? "生图中" : "发送");
+            sendButton.setEnabled(!historyLoadStarted && !imageAttachmentLoading
+                    && !imageRequestRunning);
+        }
+        boolean allowConversationChanges = !streaming && !historyLoadStarted
+                && !imageAttachmentLoading && !imageRequestRunning;
+        newChatButton.setEnabled(allowConversationChanges);
+        menuButton.setEnabled(allowConversationChanges);
+        modelButton.setEnabled(allowConversationChanges);
+        if (attachButton != null) attachButton.setEnabled(!historyLoadStarted
+                && !imageAttachmentLoading && !imageRequestRunning);
     }
 
     private void stopStreaming() {
+        if (!streaming || stopRequested) return;
         stopRequested = true;
-        streaming = false;
+        statusText.setText("正在停止...");
+        updateChatControls();
         if (activeChatConnection != null) activeChatConnection.disconnect();
-        setStreamingUi(false);
     }
 
     private void toast(String text) {
         Toast.makeText(this, text == null ? "操作失败" : text, Toast.LENGTH_LONG).show();
-    }
-
-    private void openKeyboard(View view) {
-        InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
-        if (imm != null) imm.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT);
-    }
-
-    private void focusPromptInput(boolean showKeyboard) {
-        if (promptInput == null || !promptInput.isEnabled()) return;
-        promptInput.requestFocus();
-        promptInput.setSelection(promptInput.getText().length());
-        if (showKeyboard) {
-            openKeyboard(promptInput);
-        }
     }
 
     private void checkAppUpdate(boolean manual) {
@@ -1833,20 +2505,23 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void installKeyboardAvoidance() {
-        root.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
-            Rect visible = new Rect();
-            getWindow().getDecorView().getWindowVisibleDisplayFrame(visible);
-            int fullHeight = getResources().getDisplayMetrics().heightPixels;
-            int hidden = fullHeight - visible.bottom;
-            int keyboardHeight = hidden > dp(140) ? hidden : 0;
-            composer.setTranslationY(-keyboardHeight);
-            composer.bringToFront();
-            scroll.setPadding(0, 0, 0, keyboardHeight == 0 ? 0 : keyboardHeight + dp(12));
-            if (keyboardHeight > 0 && promptInput.hasFocus()) {
-                scrollToChatBottom();
+    private byte[] readLimitedFileBytes(String localPath, int limit) throws Exception {
+        File source = new File(localPath);
+        if (!source.isFile()) throw new Exception("图片文件不存在");
+        if (source.length() > limit) throw new Exception("图片文件过大");
+        try (InputStream in = new FileInputStream(source);
+             ByteArrayOutputStream out = new ByteArrayOutputStream(
+                     (int) Math.min(source.length(), 1024 * 1024))) {
+            byte[] buf = new byte[8192];
+            int total = 0;
+            int n;
+            while ((n = in.read(buf)) != -1) {
+                total += n;
+                if (total > limit) throw new Exception("图片文件过大");
+                out.write(buf, 0, n);
             }
-        });
+            return out.toByteArray();
+        }
     }
 
     private int dp(int value) {
@@ -1859,6 +2534,40 @@ public class MainActivity extends Activity {
         bg.setCornerRadius(radius);
         bg.setStroke(dp(1), stroke);
         return bg;
+    }
+
+    private static class TimelineEntry {
+        static final int KIND_MESSAGE = 0;
+        static final int KIND_IMAGE = 1;
+        static final int KIND_IMAGE_FAILURE = 2;
+
+        final long timestamp;
+        final int kind;
+        final String stableId;
+        final MessageEntity message;
+        final ImageVersionEntity image;
+
+        private TimelineEntry(long timestamp, int kind, String stableId,
+                              MessageEntity message, ImageVersionEntity image) {
+            this.timestamp = timestamp;
+            this.kind = kind;
+            this.stableId = stableId == null ? "" : stableId;
+            this.message = message;
+            this.image = image;
+        }
+
+        static TimelineEntry forMessage(MessageEntity message) {
+            return new TimelineEntry(message.createdAt, KIND_MESSAGE,
+                    "message-" + message.id, message, null);
+        }
+
+        static TimelineEntry forImage(ImageVersionEntity image, long timestamp) {
+            return new TimelineEntry(timestamp, KIND_IMAGE, image.id, null, image);
+        }
+
+        static TimelineEntry forImageFailure(ImageVersionEntity image, long timestamp) {
+            return new TimelineEntry(timestamp, KIND_IMAGE_FAILURE, image.id, null, image);
+        }
     }
 
     private static class Model {

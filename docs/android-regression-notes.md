@@ -34,30 +34,54 @@ accidentally reversed in later releases.
 | v1.4.6 | pending release | Removes client-side image price prompts while preserving server-side permission checks, reservations, accounting and settlement. |
 | v1.4.7 | pending release | Adopts the unified 15code brand icon across adaptive and legacy Android launchers. |
 | v1.4.3 | previous | Adds permission-aware image generation and editing through `cli.15code.com/v1`, with preview, iterative editing, and gallery save. |
+| v1.5.0 | planned stable | Restores the native inline bottom `EditText`, removes the popup composer and all manual IME/focus workarounds, keeps the input connection alive during streaming, and persists per-conversation drafts with Room plus a process-death fallback. |
+| v1.5.0 | planned stable | Restores image cards with their original text timeline after reopening a conversation, preserves direct parent IDs across repeated edits, clears generated-version identity when switching to an album image, and samples previews off the UI thread. |
 
 ## Guardrails
 
-- Do not add broad `setOnFocusChangeListener` loops to `promptInput`.
-- If first-tap handling is needed, keep it limited to `ACTION_DOWN` when the
-  input does not already have focus. Do not keep forcing focus while the user is
-  editing.
-- First-tap handling must return `false` so the native `EditText` still receives
-  the rest of the touch sequence and creates a normal input connection.
-- Do not repeatedly force `openKeyboard()` from focus changes. Native `EditText`
-  should own normal tap-to-type behavior after the first focus.
-- If inline input regresses on real devices, keep the dialog composer as the
-  primary input path. It uses a system-managed `EditText` and avoids broken
-  inline input connections.
-- Prefer a bottom input sheet over `AlertDialog`: it keeps the chat context
-  visible and matches common mobile chat behavior while still avoiding fragile
-  inline composer input connections.
+- Keep `promptInput` as the one real, focusable native `EditText` in the bottom
+  composer. Do not replace it with an `AlertDialog`, `PopupWindow`, fake input,
+  or separate bottom sheet.
+- Do not add click, touch, or focus listeners whose purpose is to request focus
+  or call `showSoftInput()`. A normal tap must be handled entirely by
+  `EditText` and Android's input-method manager.
+- Only `adjustResize` owns IME layout. Do not measure keyboard height, translate
+  the composer, or add keyboard-sized scroll padding; those create double
+  avoidance on devices where the system already resizes the activity.
+- While the current UI does not consume system-bar insets itself, keep Android
+  15's edge-to-edge enforcement opted out so `adjustResize` has one predictable
+  content area. If the app later adopts edge-to-edge, replace this with a single
+  root-window insets implementation and test IME/system bars together first.
+- Never disable `promptInput` during streaming. The send button may become a
+  stop button, while the user keeps editing the next draft with the same input
+  connection.
+- After Stop is tapped, keep the send button in a disabled `Stopping` state
+  until the old worker exits. The composer remains editable, but a second
+  request must not share the first request's message array or connection state.
+- A user-cancelled stream must not enter the ordinary non-streaming retry path,
+  including when cancellation happens before the first response token arrives.
+- Persist drafts per conversation after a short debounce, flush them when the
+  activity pauses or the conversation changes, and restore without overwriting
+  text typed after an asynchronous history load began.
+- While Room history is loading, keep the native composer editable and persist
+  its draft, but temporarily lock Send/New/Menu/Model. Otherwise a fast send or
+  new-chat tap can race the older history snapshot and replace live state or
+  persist an empty snapshot over an existing conversation.
+- Freeze the selected model and search mode when a request starts. Later UI or
+  account refreshes must not relabel or reroute a stream that is already active.
 - Keep debug APK signing stable. Changing the signing key forces uninstall and
   deletes local app data, including chat history and session state.
-- Keep keyboard avoidance tied to measured keyboard height:
-  `composer.setTranslationY(-keyboardHeight)` and bottom scroll padding of
-  `keyboardHeight + 12dp`.
 - If streaming needs to prevent a second send, use the send button state. Avoid
   changing input focus behavior as part of streaming rendering fixes.
+- Keep message `createdAt` values stable when replacing the bounded request
+  history. Generated-image cards are merged by their completion timestamp, so
+  rewriting text timestamps on every save changes the visible conversation.
+- A generated image selected for another edit must carry its own version ID as
+  `parentVersionId`. Album images have no generated parent; removing, sending,
+  switching conversations, and starting a new chat must clear that identity.
+- Decode image cards and attachment thumbnails with bounded sampled previews on
+  an image worker. Never read and decode a full generated image on the UI
+  thread; copy original files in bounded chunks for edits and gallery saves.
 - During streaming, scroll to the measured message-list height after layout.
   Do not restore focus-based `fullScroll`, which can stop at the first screen
   while a selectable response bubble is still growing.
