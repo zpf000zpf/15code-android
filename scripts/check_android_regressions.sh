@@ -11,12 +11,12 @@ fail() {
   exit 1
 }
 
-grep -q 'private static final String APP_VERSION = "1.4.5";' "$MAIN" \
-  || fail "APP_VERSION must be 1.4.5"
-grep -q 'versionName "1.4.5"' "$GRADLE" \
-  || fail "Gradle versionName must be 1.4.5"
-grep -q 'versionCode 33' "$GRADLE" \
-  || fail "Gradle versionCode must be 33"
+grep -q 'private static final String APP_VERSION = "1.4.6";' "$MAIN" \
+  || fail "APP_VERSION must be 1.4.6"
+grep -q 'versionName "1.4.6"' "$GRADLE" \
+  || fail "Gradle versionName must be 1.4.6"
+grep -q 'versionCode 34' "$GRADLE" \
+  || fail "Gradle versionCode must be 34"
 grep -q 'signingConfigs' "$GRADLE" \
   || fail "stable debug signing config is required"
 grep -q '15code-debug.keystore' "$GRADLE" \
@@ -30,10 +30,9 @@ grep -q 'IMAGE_GENERATIONS = "https://cli.15code.com/v1/images/generations"' "$M
   || fail "Android image generation must use cli.15code.com Images API"
 grep -q 'IMAGE_EDITS = "https://cli.15code.com/v1/images/edits"' "$MAIN" \
   || fail "Android image editing must use cli.15code.com Images API"
-grep -q 'IMAGE_PRICING = PLATFORM + "/api/image-pricing"' "$MAIN" \
-  || fail "Android image pricing must use the authenticated platform API"
-grep -q '实际扣费仍由服务端统一结算' "$MAIN" \
-  || fail "Android must explain that image settlement is server authoritative"
+if grep -q 'IMAGE_PRICING\|图片价格说明\|价格来源：OpenRouter\|单次最大预约' "$MAIN"; then
+  fail "Android must not display image pricing prompts"
+fi
 grep -q 'body.put("model", "gpt-image-2")' "$MAIN" \
   || fail "Android image generation must use the public gpt-image-2 model"
 grep -Fq 'new String[]{"横版 1536x1024", "方图 1024x1024", "竖版 1024x1536"}' "$MAIN" \
