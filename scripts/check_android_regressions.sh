@@ -176,6 +176,8 @@ grep -q 'if (!streaming || stopRequested) return;' "$MAIN" \
   || fail "repeated stop taps must not reopen the streaming state"
 grep -q 'sendButton.setText(stopRequested ? "停止中" : "停止")' "$MAIN" \
   || fail "the send button must stay locked until the stopped request exits"
+grep -q 'sendButton.setEnabled(!stopRequested);' "$MAIN" \
+  || fail "the stop control must be disabled until the stopped request exits"
 grep -q 'if (stopRequested) {' "$MAIN" \
   || fail "a user-cancelled stream must never fall through to non-streaming retry"
 grep -q 'imageExecutor.execute' "$MAIN" \
@@ -190,6 +192,14 @@ grep -q 'adjustResize did not move the composer' "$SMOKE" \
   || fail "device smoke test must verify the composer remains above the IME"
 grep -q 'assert_text "\$STREAM_TEXT"' "$SMOKE" \
   || fail "device smoke test must verify typing during streaming"
+grep -q 'assert_stop_is_locked' "$SMOKE" \
+  || fail "device smoke test must verify stop stays locked while streaming exits"
+grep -q 'parentVersionId = edit ? selectedImageVersionId : null' "$MAIN" \
+  || fail "continuous image edits must retain the immediately selected generated parent"
+grep -q 'listRecentImageVersions(conversationId, MAX_HISTORY_IMAGE_VERSIONS)' "$MAIN" \
+  || fail "history restoration must reload persisted image versions"
+grep -q 'Collections.sort(timeline, Comparator' "$MAIN" \
+  || fail "history restoration must merge image cards into the stable message timeline"
 grep -q 'android-emulator-runner@v2' "$REGRESSION_WORKFLOW" \
   || fail "CI must run the native composer smoke test on Android"
 grep -Fq 'api-level: [28, 35]' "$REGRESSION_WORKFLOW" \

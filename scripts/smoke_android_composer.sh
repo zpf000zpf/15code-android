@@ -9,6 +9,7 @@ INPUT_DESC="chat-composer-input"
 SMOKE_ID="composer-$(date +%s)"
 ASCII_TEXT="NativeIme123"
 STREAM_TEXT="DraftWhileStreaming456"
+STOPPING_TEXT="停止中"
 APK="$ROOT/app/build/outputs/apk/debug/app-debug.apk"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
@@ -101,6 +102,20 @@ assert_text() {
     || fail "composer text is not '$expected'"
 }
 
+tap_button_with_text() {
+  local text="$1"
+  dump_ui "$TMP_DIR/button.xml"
+  read -r left top right bottom <<<"$(sed -n "s/.*text=\"$text\"[^>]*bounds=\"\\[\\([0-9]*\\),\\([0-9]*\\)\\]\\[\\([0-9]*\\),\\([0-9]*\\)\\]\".*/\\1 \\2 \\3 \\4/p" "$TMP_DIR/button.xml" | head -1)"
+  [ -n "${left:-}" ] || fail "button '$text' was not found"
+  "$ADB" shell input tap "$(((left + right) / 2))" "$(((top + bottom) / 2))"
+}
+
+assert_stop_is_locked() {
+  dump_ui "$TMP_DIR/stopping.xml"
+  grep -Eq "text=\"$STOPPING_TEXT\"[^>]*enabled=\"false\"|enabled=\"false\"[^>]*text=\"$STOPPING_TEXT\"" "$TMP_DIR/stopping.xml" \
+    || fail "Stop did not remain locked while the active stream exits"
+}
+
 "$ADB" install -r "$APK" >/dev/null
 start_smoke true false
 tap_composer
@@ -132,5 +147,8 @@ grep -Eq "content-desc=\"$INPUT_DESC\"[^>]*focused=\"true\"" "$TMP_DIR/stream.xm
   || fail "streaming updates stole focus from the composer"
 grep -Eq 'text="停止"' "$TMP_DIR/stream.xml" \
   || fail "streaming smoke mode did not activate the stop button"
+tap_button_with_text "停止"
+sleep 0.3
+assert_stop_is_locked
 
 echo "Android native composer smoke passed"
