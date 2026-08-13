@@ -14,7 +14,7 @@ Android client for 15code. Version 1.4.5 is a native chat and image app that sig
 - Automatic non-stream fallback when Android aborts a streaming socket
 - Local recent chat history
 - Image attachment payloads for vision-capable models
-- `gpt-image-2` generation and editing with landscape, square and portrait sizes; standard/high quality; PNG/JPEG/WebP output; and Gallery save
+- In-chat `gpt-image-2` generation and editing with results kept in the active conversation, landscape/square/portrait sizes, standard/high quality, PNG/JPEG/WebP output, and Gallery save
 - 15code-branded launcher icon and splash theme
 - New-chat action, saved model choice, and mobile-optimized message bubbles
 - Balance/account status display after login

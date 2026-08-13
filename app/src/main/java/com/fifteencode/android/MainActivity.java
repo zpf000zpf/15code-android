@@ -116,7 +116,6 @@ public class MainActivity extends Activity {
     private TextView statusText;
     private TextView accountText;
     private Button newChatButton;
-    private Button imageStudioButton;
     private Button menuButton;
     private Button searchButton;
     private Button attachButton;
@@ -231,20 +230,6 @@ public class MainActivity extends Activity {
         newChatButton.setContentDescription("新建对话");
         newChatButton.setOnClickListener(v -> newChat());
         header.addView(newChatButton, new LinearLayout.LayoutParams(dp(52), dp(42)));
-
-        imageStudioButton = new Button(this);
-        imageStudioButton.setText("图片");
-        imageStudioButton.setAllCaps(false);
-        imageStudioButton.setTextSize(13);
-        imageStudioButton.setContentDescription("图片生成与编辑");
-        imageStudioButton.setOnClickListener(v -> {
-            if (sessionToken == null || goKey == null) {
-                toast("请先登录后使用图片生成");
-                return;
-            }
-            showImageStudioDialog();
-        });
-        header.addView(imageStudioButton, new LinearLayout.LayoutParams(dp(62), dp(42)));
 
         menuButton = new Button(this);
         menuButton.setText("⋮");
@@ -424,7 +409,8 @@ public class MainActivity extends Activity {
         attachButton.setAllCaps(false);
         attachButton.setTextColor(0xFF0F172A);
         attachButton.setBackground(makeBg(0xFFFFFFFF, 0xFFCBD5E1, dp(18)));
-        attachButton.setOnClickListener(v -> pickImage());
+        attachButton.setContentDescription("添加图片或生成图片");
+        attachButton.setOnClickListener(this::showImageComposerMenu);
         LinearLayout.LayoutParams attachLp = new LinearLayout.LayoutParams(dp(48), dp(56));
         attachLp.setMargins(0, 0, dp(8), 0);
         composer.addView(attachButton, attachLp);
@@ -445,14 +431,24 @@ public class MainActivity extends Activity {
     private void showHeaderMenu(View anchor) {
         PopupMenu menu = new PopupMenu(this, anchor);
         menu.getMenu().add("检查更新");
-        if (sessionToken != null) menu.getMenu().add("图片生成/编辑");
         if (sessionToken != null) menu.getMenu().add("会话列表");
         if (sessionToken != null) menu.getMenu().add("退出登录");
         menu.setOnMenuItemClickListener(item -> {
             if ("检查更新".contentEquals(item.getTitle())) checkAppUpdate(true);
-            else if ("图片生成/编辑".contentEquals(item.getTitle())) showImageStudioDialog();
             else if ("会话列表".contentEquals(item.getTitle())) showConversationList("");
             else if ("退出登录".contentEquals(item.getTitle())) logout();
+            return true;
+        });
+        menu.show();
+    }
+
+    private void showImageComposerMenu(View anchor) {
+        PopupMenu menu = new PopupMenu(this, anchor);
+        menu.getMenu().add("从相册添加图片");
+        if (sessionToken != null && goKey != null) menu.getMenu().add("在当前对话中生成/修改图片");
+        menu.setOnMenuItemClickListener(item -> {
+            if ("从相册添加图片".contentEquals(item.getTitle())) pickImage();
+            else showImageStudioDialog();
             return true;
         });
         menu.show();
@@ -563,6 +559,7 @@ public class MainActivity extends Activity {
     }
 
     private void requestImage(String prompt, boolean edit, String size, String quality, String format) {
+        addBubble("你", (edit ? "修改图片：" : "生成图片：") + prompt, true);
         setBusy(true, edit ? "正在修改图片..." : "正在生成图片...");
         storageExecutor.execute(() -> {
             try {
@@ -616,11 +613,28 @@ public class MainActivity extends Activity {
 
     private void showImageResult(String dataUrl) {
         byte[] bytes = Base64.decode(dataUrl.substring(dataUrl.indexOf(',') + 1), Base64.DEFAULT);
-        ImageView preview = new ImageView(this); preview.setAdjustViewBounds(true);
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(10), dp(10), dp(10), dp(10));
+        card.setBackground(makeBg(0xFFFFFFFF, 0xFFE2E8F0, dp(14)));
+        ImageView preview = new ImageView(this);
+        preview.setAdjustViewBounds(true);
         preview.setImageBitmap(BitmapFactory.decodeByteArray(bytes, 0, bytes.length));
-        new AlertDialog.Builder(this).setTitle("图片已完成").setView(preview).setNegativeButton("关闭", null)
-                .setNeutralButton("继续修改", (d, w) -> { selectedImageDataUrl = dataUrl; selectedImageName = "生成图片"; updateAttachmentPreview(); showImageStudioDialog(); })
-                .setPositiveButton("保存", (d, w) -> saveImageToGallery(bytes, imageMimeType(dataUrl))).show();
+        card.addView(preview, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout actions = new LinearLayout(this);
+        actions.setGravity(Gravity.RIGHT);
+        Button edit = new Button(this); edit.setText("继续修改"); edit.setAllCaps(false);
+        Button save = new Button(this); save.setText("保存"); save.setAllCaps(false);
+        actions.addView(edit, new LinearLayout.LayoutParams(dp(110), dp(48)));
+        actions.addView(save, new LinearLayout.LayoutParams(dp(82), dp(48)));
+        card.addView(actions, new LinearLayout.LayoutParams(-1, dp(52)));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.setMargins(0, dp(8), dp(42), dp(8));
+        messageList.addView(card, lp);
+        edit.setOnClickListener(v -> { selectedImageDataUrl = dataUrl; selectedImageName = "生成图片"; updateAttachmentPreview(); showImageStudioDialog(); });
+        save.setOnClickListener(v -> saveImageToGallery(bytes, imageMimeType(dataUrl)));
+        setBusy(false, "图片已生成 · 可继续对话或修改");
+        scrollToChatBottom();
     }
 
     private String imageMimeType(String dataUrl) {
@@ -1324,7 +1338,6 @@ public class MainActivity extends Activity {
         loginPanel.setVisibility(View.VISIBLE);
         chatPanel.setVisibility(View.GONE);
         newChatButton.setVisibility(View.GONE);
-        imageStudioButton.setVisibility(View.GONE);
         menuButton.setVisibility(View.VISIBLE);
         statusText.setText("请登录");
     }
@@ -1333,7 +1346,6 @@ public class MainActivity extends Activity {
         loginPanel.setVisibility(View.GONE);
         chatPanel.setVisibility(View.VISIBLE);
         newChatButton.setVisibility(View.VISIBLE);
-        imageStudioButton.setVisibility(View.VISIBLE);
         menuButton.setVisibility(View.VISIBLE);
         accountText.setText((accountEmail == null || accountEmail.isEmpty() ? "已登录" : accountEmail)
                 + " · 余额 " + String.format("%.4f", credits));
