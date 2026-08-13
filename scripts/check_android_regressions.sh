@@ -11,12 +11,12 @@ fail() {
   exit 1
 }
 
-grep -q 'private static final String APP_VERSION = "1.4.6";' "$MAIN" \
-  || fail "APP_VERSION must be 1.4.6"
-grep -q 'versionName "1.4.6"' "$GRADLE" \
-  || fail "Gradle versionName must be 1.4.6"
-grep -q 'versionCode 34' "$GRADLE" \
-  || fail "Gradle versionCode must be 34"
+grep -q 'private static final String APP_VERSION = "1.4.7";' "$MAIN" \
+  || fail "APP_VERSION must be 1.4.7"
+grep -q 'versionName "1.4.7"' "$GRADLE" \
+  || fail "Gradle versionName must be 1.4.7"
+grep -q 'versionCode 35' "$GRADLE" \
+  || fail "Gradle versionCode must be 35"
 grep -q 'signingConfigs' "$GRADLE" \
   || fail "stable debug signing config is required"
 grep -q '15code-debug.keystore' "$GRADLE" \

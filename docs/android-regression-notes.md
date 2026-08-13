@@ -32,6 +32,7 @@ accidentally reversed in later releases.
 | v1.4.4 | current | Uses the public `gpt-image-2` model for generation and editing, matching the server permission and pricing boundary. |
 | v1.4.5 | pending release | Keeps generation and editing inside the active chat, renders results in the conversation, and adds presentation-friendly image size, quality and output-format choices while retaining the same `gpt-image-2` permission and pricing path. |
 | v1.4.6 | pending release | Removes client-side image price prompts while preserving server-side permission checks, reservations, accounting and settlement. |
+| v1.4.7 | pending release | Adopts the unified 15code brand icon across adaptive and legacy Android launchers. |
 | v1.4.3 | previous | Adds permission-aware image generation and editing through `cli.15code.com/v1`, with preview, iterative editing, and gallery save. |
 
 ## Guardrails

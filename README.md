@@ -1,6 +1,6 @@
 # 15code Android
 
-Android client for 15code. Version 1.4.6 is a native chat and image app that signs in with a 15code account, loads the public Catalog, and uses the same 15code API platform as the desktop app.
+Android client for 15code. Version 1.4.7 is a native chat and image app that signs in with a 15code account, loads the public Catalog, and uses the same 15code API platform as the desktop app.
 
 ## Features
 
