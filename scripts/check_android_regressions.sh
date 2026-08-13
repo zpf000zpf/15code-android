@@ -30,6 +30,10 @@ grep -q 'IMAGE_GENERATIONS = "https://cli.15code.com/v1/images/generations"' "$M
   || fail "Android image generation must use cli.15code.com Images API"
 grep -q 'IMAGE_EDITS = "https://cli.15code.com/v1/images/edits"' "$MAIN" \
   || fail "Android image editing must use cli.15code.com Images API"
+grep -q 'IMAGE_PRICING = PLATFORM + "/api/image-pricing"' "$MAIN" \
+  || fail "Android image pricing must use the authenticated platform API"
+grep -q '实际扣费仍由服务端统一结算' "$MAIN" \
+  || fail "Android must explain that image settlement is server authoritative"
 grep -q 'body.put("model", "gpt-image-2")' "$MAIN" \
   || fail "Android image generation must use the public gpt-image-2 model"
 grep -Fq 'new String[]{"横版 1536x1024", "方图 1024x1024", "竖版 1024x1536"}' "$MAIN" \
