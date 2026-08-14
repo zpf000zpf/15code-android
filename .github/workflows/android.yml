@@ -86,7 +86,15 @@ jobs:
           cp app/build/outputs/apk/debug/app-debug.apk "dist/15code-android-v${VERSION}-debug.apk"
           cp app/build/outputs/apk/release/app-release.apk "dist/15code-android-v${VERSION}-release.apk"
           cp app/build/outputs/bundle/release/app-release.aab "dist/15code-android-v${VERSION}-release.aab"
-          sha256sum dist/* > "dist/15code-android-v${VERSION}.sha256"
+          (
+            cd dist
+            sha256sum \
+              "15code-android-v${VERSION}-debug.apk" \
+              "15code-android-v${VERSION}-release.apk" \
+              "15code-android-v${VERSION}-release.aab" \
+              > "15code-android-v${VERSION}.sha256"
+            sha256sum -c "15code-android-v${VERSION}.sha256"
+          )
 
       - uses: actions/upload-artifact@v7
         with:
