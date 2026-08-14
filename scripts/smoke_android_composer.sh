@@ -64,11 +64,17 @@ start_smoke() {
   local reset="$2"
   local streaming="$3"
   "$ADB" shell am force-stop "$PACKAGE"
+  # Dismiss launcher/system state left by a cold emulator boot. Application
+  # failures remain visible to the smoke assertions and diagnostics.
+  "$ADB" shell am force-stop com.android.launcher3 >/dev/null 2>&1 || true
+  "$ADB" shell am force-stop com.google.android.apps.nexuslauncher >/dev/null 2>&1 || true
   "$ADB" shell am start -W -n "$ACTIVITY" \
     --ez smokeComposer true \
     --es smokeConversationId "$conversation_id" \
     --ez smokeResetDraft "$reset" \
     --ez smokeStreaming "$streaming" >/dev/null
+  "$ADB" shell dumpsys activity top | grep -Fq "ACTIVITY $PACKAGE/.MainActivity" \
+    || fail "target activity did not reach foreground"
   sleep 1
 }
 

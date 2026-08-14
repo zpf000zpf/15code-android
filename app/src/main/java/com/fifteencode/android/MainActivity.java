@@ -1160,12 +1160,12 @@ public class MainActivity extends Activity {
         models.clear();
         models.add(Model.basic(PREFERRED_MODEL, PREFERRED_MODEL));
         setBusy(false, "Smoke test");
-        showChat();
         if (getIntent().getBooleanExtra("smokeResetDraft", false)) {
             draftEditRevision++;
             restorePromptDraft("");
             persistDraftAsync(currentConversationId, "", true);
         }
+        showChat();
         if (getIntent().getBooleanExtra("smokeStreaming", false)) {
             setStreamingUi(true);
             uiHandler.postDelayed(() -> {
