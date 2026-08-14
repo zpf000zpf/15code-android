@@ -6,6 +6,7 @@ ADB="${ADB:-${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}/platform-tools/adb}"
 PACKAGE="com.fifteencode.android"
 ACTIVITY="$PACKAGE/.MainActivity"
 INPUT_DESC="chat-composer-input"
+INPUT_HINT='发消息给 15code'
 SMOKE_ID_A="composer-a-$(date +%s)"
 SMOKE_ID_B="composer-b-$(date +%s)"
 FIRST_DRAFT_TEXT="NativeIme123"
@@ -150,7 +151,7 @@ assert_stop_is_locked() {
 assert_empty_text() {
   wait_for_composer
   dump_ui "$TMP_DIR/empty.xml"
-  grep -Eq "content-desc=\"$INPUT_DESC\"[^>]*text=\"\"|text=\"\"[^>]*content-desc=\"$INPUT_DESC\"" "$TMP_DIR/empty.xml" \
+  grep -Eq "content-desc=\"$INPUT_DESC\"[^>]*text=(\"\"|\"$INPUT_HINT\")|text=(\"\"|\"$INPUT_HINT\")[^>]*content-desc=\"$INPUT_DESC\"" "$TMP_DIR/empty.xml" \
     || fail "a new conversation inherited another conversation's draft"
 }
 

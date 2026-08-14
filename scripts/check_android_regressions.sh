@@ -204,6 +204,14 @@ grep -q 'SMOKE_ID_B=' "$SMOKE" \
   || fail "device smoke test must use a second isolated conversation"
 grep -q 'assert_empty_text' "$SMOKE" \
   || fail "device smoke test must verify a new conversation has no inherited draft"
+empty_text_fixture='<node content-desc="chat-composer-input" text="发消息给 15code" />'
+empty_text_pattern='content-desc="chat-composer-input"[^>]*text=(""|"发消息给 15code")|text=(""|"发消息给 15code")[^>]*content-desc="chat-composer-input"'
+printf '%s\n' "$empty_text_fixture" | grep -Eq "$empty_text_pattern" \
+  || fail "empty composer hint must be accepted by the smoke selector"
+if printf '%s\n' '<node content-desc="chat-composer-input" text="OtherConversationDraft789" />' \
+    | grep -Eq "$empty_text_pattern"; then
+  fail "empty composer selector must reject arbitrary draft text"
+fi
 grep -Fq 'start_smoke "$SMOKE_ID_A" false false' "$SMOKE" \
   || fail "device smoke test must restore the first conversation draft"
 grep -Fq 'start_smoke "$SMOKE_ID_B" false false' "$SMOKE" \
