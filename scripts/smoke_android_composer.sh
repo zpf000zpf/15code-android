@@ -6,8 +6,10 @@ ADB="${ADB:-${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}/platform-tools/adb}"
 PACKAGE="com.fifteencode.android"
 ACTIVITY="$PACKAGE/.MainActivity"
 INPUT_DESC="chat-composer-input"
-SMOKE_ID="composer-$(date +%s)"
-ASCII_TEXT="NativeIme123"
+SMOKE_ID_A="composer-a-$(date +%s)"
+SMOKE_ID_B="composer-b-$(date +%s)"
+FIRST_DRAFT_TEXT="NativeIme123"
+SECOND_DRAFT_TEXT="OtherConversationDraft789"
 STREAM_TEXT="DraftWhileStreaming456"
 STOPPING_TEXT="停止中"
 APK="$ROOT/app/build/outputs/apk/debug/app-debug.apk"
@@ -37,12 +39,13 @@ if [ ! -f "$APK" ]; then
 fi
 
 start_smoke() {
-  local reset="$1"
-  local streaming="$2"
+  local conversation_id="$1"
+  local reset="$2"
+  local streaming="$3"
   "$ADB" shell am force-stop "$PACKAGE"
   "$ADB" shell am start -W -n "$ACTIVITY" \
     --ez smokeComposer true \
-    --es smokeConversationId "$SMOKE_ID" \
+    --es smokeConversationId "$conversation_id" \
     --ez smokeResetDraft "$reset" \
     --ez smokeStreaming "$streaming" >/dev/null
   sleep 1
@@ -97,6 +100,7 @@ assert_focused_and_keyboard_visible() {
 
 assert_text() {
   local expected="$1"
+  wait_for_composer
   dump_ui "$TMP_DIR/text.xml"
   grep -Eq "content-desc=\"$INPUT_DESC\"[^>]*text=\"$expected\"|text=\"$expected\"[^>]*content-desc=\"$INPUT_DESC\"" "$TMP_DIR/text.xml" \
     || fail "composer text is not '$expected'"
@@ -116,28 +120,48 @@ assert_stop_is_locked() {
     || fail "Stop did not remain locked while the active stream exits"
 }
 
+assert_empty_text() {
+  wait_for_composer
+  dump_ui "$TMP_DIR/empty.xml"
+  grep -Eq "content-desc=\"$INPUT_DESC\"[^>]*text=\"\"|text=\"\"[^>]*content-desc=\"$INPUT_DESC\"" "$TMP_DIR/empty.xml" \
+    || fail "a new conversation inherited another conversation's draft"
+}
+
+assert_control_disabled() {
+  local description="$1"
+  dump_ui "$TMP_DIR/control.xml"
+  grep -Eq "content-desc=\"$description\"[^>]*enabled=\"false\"|enabled=\"false\"[^>]*content-desc=\"$description\"" "$TMP_DIR/control.xml" \
+    || fail "control '$description' remained enabled while streaming"
+}
+
 "$ADB" install -r "$APK" >/dev/null
-start_smoke true false
+start_smoke "$SMOKE_ID_A" true false
 tap_composer
 assert_focused_and_keyboard_visible
-"$ADB" shell input text "$ASCII_TEXT"
-assert_text "$ASCII_TEXT"
+"$ADB" shell input text "$FIRST_DRAFT_TEXT"
+assert_text "$FIRST_DRAFT_TEXT"
 
 "$ADB" shell input keyevent KEYCODE_BACK
 sleep 1
 tap_composer
 assert_focused_and_keyboard_visible
 
-"$ADB" shell am force-stop "$PACKAGE"
-"$ADB" shell am start -W -n "$ACTIVITY" \
-  --ez smokeComposer true \
-  --es smokeConversationId "$SMOKE_ID" \
-  --ez smokeResetDraft false \
-  --ez smokeStreaming false >/dev/null
-sleep 1
-assert_text "$ASCII_TEXT"
+start_smoke "$SMOKE_ID_A" false false
+assert_text "$FIRST_DRAFT_TEXT"
 
-start_smoke true true
+start_smoke "$SMOKE_ID_B" true false
+assert_empty_text
+tap_composer
+assert_focused_and_keyboard_visible
+"$ADB" shell input text "$SECOND_DRAFT_TEXT"
+assert_text "$SECOND_DRAFT_TEXT"
+
+start_smoke "$SMOKE_ID_A" false false
+assert_text "$FIRST_DRAFT_TEXT"
+start_smoke "$SMOKE_ID_B" false false
+assert_text "$SECOND_DRAFT_TEXT"
+
+start_smoke "$SMOKE_ID_A" true true
 tap_composer
 assert_focused_and_keyboard_visible
 "$ADB" shell input text "$STREAM_TEXT"
@@ -147,6 +171,8 @@ grep -Eq "content-desc=\"$INPUT_DESC\"[^>]*focused=\"true\"" "$TMP_DIR/stream.xm
   || fail "streaming updates stole focus from the composer"
 grep -Eq 'text="停止"' "$TMP_DIR/stream.xml" \
   || fail "streaming smoke mode did not activate the stop button"
+assert_control_disabled "新建对话"
+assert_control_disabled "更多操作"
 tap_button_with_text "停止"
 sleep 0.3
 assert_stop_is_locked

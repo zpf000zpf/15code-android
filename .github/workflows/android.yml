@@ -29,13 +29,23 @@ jobs:
         shell: bash
         run: |
           bash scripts/check_android_regressions.sh
+          export EXPECTED_ANDROID_VERSION="$(sed -n 's/.*versionName "\([^"]*\)".*/\1/p' app/build.gradle)"
+          test -n "$EXPECTED_ANDROID_VERSION"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            test "$GITHUB_REF_NAME" = "v$EXPECTED_ANDROID_VERSION"
+          fi
           node - <<'NODE'
           (async () => {
             const response = await fetch('https://15code.com/api/catalog');
             if (!response.ok) throw new Error(`Catalog HTTP ${response.status}`);
             const catalog = await response.json();
-            if (catalog.schemaVersion !== 1 || !catalog.releases?.android?.stable?.minimumSupportedVersion) {
+            const release = catalog.releases?.android?.stable;
+            if (catalog.schemaVersion !== 1 || !release?.minimumSupportedVersion) {
               throw new Error('Catalog release policy is incomplete');
+            }
+            const asset = await fetch(new URL(release.downloadUrl, 'https://15code.com'), { method: 'HEAD' });
+            if (!asset.ok || !/^[a-f0-9]{64}$/.test(release.sha256 || '')) {
+              throw new Error('Current Catalog Android release is not downloadable or lacks SHA256');
             }
           })();
           NODE

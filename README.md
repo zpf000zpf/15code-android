@@ -1,6 +1,6 @@
 # 15code Android
 
-Android client for 15code. Version 1.4.7 is a native chat and image app that signs in with a 15code account, loads the public Catalog, and uses the same 15code API platform as the desktop app.
+Android client for 15code. Version 1.5.0 is a native chat and image app that signs in with a 15code account, loads the public Catalog, and uses the same 15code API platform as the desktop app.
 
 ## Features
 
@@ -34,5 +34,5 @@ Release builds are mandatory-signed. The private release keystore and its secret
 ## Release Flow
 
 1. Commit changes.
-2. Push a tag like `v1.1.0`.
+2. Push the release tag `v1.5.0`.
 3. GitHub Actions restores the signing material from repository secrets, builds signed APK/AAB artifacts, verifies the APK certificate, and attaches the artifacts to the release.

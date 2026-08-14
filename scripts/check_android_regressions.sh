@@ -5,20 +5,24 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MAIN="$ROOT/app/src/main/java/com/fifteencode/android/MainActivity.java"
 GRADLE="$ROOT/app/build.gradle"
 NOTES="$ROOT/docs/android-regression-notes.md"
+README="$ROOT/README.md"
 SMOKE="$ROOT/scripts/smoke_android_composer.sh"
 REGRESSION_WORKFLOW="$ROOT/.github/workflows/android-regression.yml"
+RELEASE_WORKFLOW="$ROOT/.github/workflows/android.yml"
 
 fail() {
   echo "REGRESSION: $*" >&2
   exit 1
 }
 
-grep -q 'private static final String APP_VERSION = "1.4.7";' "$MAIN" \
-  || fail "APP_VERSION must be 1.4.7"
-grep -q 'versionName "1.4.7"' "$GRADLE" \
-  || fail "Gradle versionName must be 1.4.7"
-grep -q 'versionCode 35' "$GRADLE" \
-  || fail "Gradle versionCode must be 35"
+grep -q 'private static final String APP_VERSION = "1.5.0";' "$MAIN" \
+  || fail "APP_VERSION must be 1.5.0"
+grep -q 'versionName "1.5.0"' "$GRADLE" \
+  || fail "Gradle versionName must be 1.5.0"
+grep -q 'versionCode 36' "$GRADLE" \
+  || fail "Gradle versionCode must be 36"
+grep -q 'Version 1.5.0' "$README" \
+  || fail "README must describe Android 1.5.0"
 grep -q 'signingConfigs' "$GRADLE" \
   || fail "stable debug signing config is required"
 grep -q '15code-debug.keystore' "$GRADLE" \
@@ -194,6 +198,18 @@ grep -q 'assert_text "\$STREAM_TEXT"' "$SMOKE" \
   || fail "device smoke test must verify typing during streaming"
 grep -q 'assert_stop_is_locked' "$SMOKE" \
   || fail "device smoke test must verify stop stays locked while streaming exits"
+grep -q 'SMOKE_ID_A=' "$SMOKE" \
+  || fail "device smoke test must use a first isolated conversation"
+grep -q 'SMOKE_ID_B=' "$SMOKE" \
+  || fail "device smoke test must use a second isolated conversation"
+grep -q 'assert_empty_text' "$SMOKE" \
+  || fail "device smoke test must verify a new conversation has no inherited draft"
+grep -Fq 'start_smoke "$SMOKE_ID_A" false false' "$SMOKE" \
+  || fail "device smoke test must restore the first conversation draft"
+grep -Fq 'start_smoke "$SMOKE_ID_B" false false' "$SMOKE" \
+  || fail "device smoke test must restore the second conversation draft"
+grep -q 'assert_control_disabled' "$SMOKE" \
+  || fail "device smoke test must verify streaming locks conversation controls"
 grep -q 'parentVersionId = edit ? selectedImageVersionId : null' "$MAIN" \
   || fail "continuous image edits must retain the immediately selected generated parent"
 grep -q 'listRecentImageVersions(conversationId, MAX_HISTORY_IMAGE_VERSIONS)' "$MAIN" \
@@ -212,11 +228,15 @@ for forbidden in \
   'promptInput.setOnClickListener' \
   'promptInput.setOnTouchListener' \
   'promptInput.setOnFocusChangeListener' \
+  'promptInput.requestFocus' \
+  'promptInput.clearFocus' \
   'composer.setOnClickListener' \
   'promptInput.setEnabled' \
   'showSoftInput' \
+  'getWindow().setSoftInputMode' \
   'composer.setTranslationY' \
-  'getWindowVisibleDisplayFrame'; do
+  'getWindowVisibleDisplayFrame' \
+  'scroll.fullScroll'; do
   if grep -Fq "$forbidden" "$MAIN"; then
     fail "inline composer reintroduced forbidden input workaround: $forbidden"
   fi
@@ -224,5 +244,13 @@ done
 
 grep -q 'Only `adjustResize` owns IME layout' "$NOTES" \
   || fail "regression notes must document the single keyboard-layout owner"
+grep -q '| v1.5.0 | release candidate |' "$NOTES" \
+  || fail "regression notes must identify the Android 1.5.0 release candidate"
+grep -Fq 'EXPECTED_ANDROID_VERSION=' "$RELEASE_WORKFLOW" \
+  || fail "release CI must derive the Android artifact version from Gradle"
+grep -Fq 'test "$GITHUB_REF_NAME" = "v$EXPECTED_ANDROID_VERSION"' "$RELEASE_WORKFLOW" \
+  || fail "release CI must require the Git tag to match the Android artifact version"
+grep -Fq "method: 'HEAD'" "$RELEASE_WORKFLOW" \
+  || fail "release CI must verify the current Catalog Android artifact remains downloadable"
 
 echo "Android regression checks passed"

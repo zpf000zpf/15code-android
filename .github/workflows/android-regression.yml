@@ -6,9 +6,11 @@ on:
     branches: ["main"]
     paths:
       - "app/**"
+      - "README.md"
       - "docs/android-regression-notes.md"
       - "scripts/check_android_regressions.sh"
       - "scripts/smoke_android_composer.sh"
+      - ".github/workflows/android.yml"
       - ".github/workflows/android-regression.yml"
 
 jobs:

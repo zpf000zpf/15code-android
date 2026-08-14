@@ -34,8 +34,8 @@ accidentally reversed in later releases.
 | v1.4.6 | pending release | Removes client-side image price prompts while preserving server-side permission checks, reservations, accounting and settlement. |
 | v1.4.7 | pending release | Adopts the unified 15code brand icon across adaptive and legacy Android launchers. |
 | v1.4.3 | previous | Adds permission-aware image generation and editing through `cli.15code.com/v1`, with preview, iterative editing, and gallery save. |
-| v1.5.0 | planned stable | Restores the native inline bottom `EditText`, removes the popup composer and all manual IME/focus workarounds, keeps the input connection alive during streaming, and persists per-conversation drafts with Room plus a process-death fallback. |
-| v1.5.0 | planned stable | Restores image cards with their original text timeline after reopening a conversation, preserves direct parent IDs across repeated edits, clears generated-version identity when switching to an album image, and samples previews off the UI thread. |
+| v1.5.0 | release candidate | Restores the native inline bottom `EditText`, removes the popup composer and all manual IME/focus workarounds, keeps the input connection alive during streaming, and persists per-conversation drafts with Room plus a process-death fallback. |
+| v1.5.0 | release candidate | Restores image cards with their original text timeline after reopening a conversation, preserves direct parent IDs across repeated edits, clears generated-version identity when switching to an album image, and samples previews off the UI thread. |
 
 ## Guardrails
 
