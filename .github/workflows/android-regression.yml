@@ -42,6 +42,8 @@ jobs:
         run: gradle assembleDebug
       - name: Test native composer on Android
         uses: ReactiveCircus/android-emulator-runner@v2
+        env:
+          COMPOSER_DIAGNOSTICS_DIR: ${{ runner.temp }}/composer-diagnostics-${{ matrix.api-level }}
         with:
           api-level: ${{ matrix.api-level }}
           arch: x86_64
@@ -49,3 +51,11 @@ jobs:
           emulator-options: -no-window -noaudio -no-boot-anim -gpu swiftshader_indirect
           disable-animations: true
           script: bash scripts/smoke_android_composer.sh
+
+      - name: Upload composer diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-composer-diagnostics-api-${{ matrix.api-level }}
+          path: ${{ runner.temp }}/composer-diagnostics-${{ matrix.api-level }}
+          if-no-files-found: error

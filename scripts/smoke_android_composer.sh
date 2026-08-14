@@ -14,7 +14,28 @@ STREAM_TEXT="DraftWhileStreaming456"
 STOPPING_TEXT="停止中"
 APK="$ROOT/app/build/outputs/apk/debug/app-debug.apk"
 TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+DIAGNOSTICS_DIR="${COMPOSER_DIAGNOSTICS_DIR:-$TMP_DIR/diagnostics}"
+
+collect_diagnostics() {
+  local status=$1 pid
+  if [ "$status" -ne 0 ]; then
+    mkdir -p "$DIAGNOSTICS_DIR"
+    dump_ui "$DIAGNOSTICS_DIR/ui-last.xml" 2>"$DIAGNOSTICS_DIR/ui-dump.err" || true
+    "$ADB" shell dumpsys activity activities >"$DIAGNOSTICS_DIR/activity.txt" 2>&1 || true
+    "$ADB" shell dumpsys activity top >"$DIAGNOSTICS_DIR/activity-top.txt" 2>&1 || true
+    "$ADB" shell dumpsys package "$PACKAGE" >"$DIAGNOSTICS_DIR/package.txt" 2>&1 || true
+    "$ADB" shell pidof "$PACKAGE" >"$DIAGNOSTICS_DIR/pid.txt" 2>&1 || true
+    pid=$(tr -d '\r\n ' <"$DIAGNOSTICS_DIR/pid.txt" || true)
+    if [ -n "$pid" ]; then
+      "$ADB" logcat -d --pid "$pid" -v brief 'AndroidRuntime:E' '*:S' >"$DIAGNOSTICS_DIR/androidruntime-logcat.txt" 2>&1 || true
+    else
+      : >"$DIAGNOSTICS_DIR/androidruntime-logcat.txt"
+    fi
+  fi
+  rm -rf "$TMP_DIR"
+  exit "$status"
+}
+trap 'collect_diagnostics "$?"' EXIT
 
 fail() {
   echo "COMPOSER SMOKE FAILED: $*" >&2
