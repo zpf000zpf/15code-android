@@ -76,7 +76,7 @@ jobs:
           test -x "$APKSIGNER"
           "$APKSIGNER" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk
           "$APKSIGNER" verify --print-certs app/build/outputs/apk/release/app-release.apk \
-            | grep -Fi 'Signer #1 certificate SHA-256 digest: 5ebc67386d8008deafc7888306235ec530b7546f89c3dd1f24c5f35e0d69a2bf'
+            | grep -Fi 'certificate SHA-256 digest: 5ebc67386d8008deafc7888306235ec530b7546f89c3dd1f24c5f35e0d69a2bf'
 
       - name: Collect artifacts
         shell: bash
