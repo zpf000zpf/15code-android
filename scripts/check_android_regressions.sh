@@ -220,6 +220,10 @@ grep -q 'android-emulator-runner@v2' "$REGRESSION_WORKFLOW" \
   || fail "CI must run the native composer smoke test on Android"
 grep -Fq 'api-level: [28, 35]' "$REGRESSION_WORKFLOW" \
   || fail "CI composer smoke must cover both legacy and Android 15 IME behavior"
+grep -Fq 'sudo chmod 0666 /dev/kvm' "$REGRESSION_WORKFLOW" \
+  || fail "CI composer smoke must enable KVM acceleration"
+grep -Fq 'test -w /dev/kvm' "$REGRESSION_WORKFLOW" \
+  || fail "CI composer smoke must verify KVM access before launching the emulator"
 
 for forbidden in \
   'openComposerDialog' \

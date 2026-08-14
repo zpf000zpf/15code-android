@@ -40,6 +40,13 @@ jobs:
           gradle-version: "8.10.2"
       - name: Build debug APK
         run: gradle assembleDebug
+      - name: Enable KVM acceleration
+        shell: bash
+        run: |
+          test -c /dev/kvm
+          sudo chmod 0666 /dev/kvm
+          test -r /dev/kvm
+          test -w /dev/kvm
       - name: Test native composer on Android
         uses: ReactiveCircus/android-emulator-runner@v2
         env:
